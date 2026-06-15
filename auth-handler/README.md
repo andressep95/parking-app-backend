@@ -438,6 +438,108 @@ go get github.com/xuri/excelize/v2
 
 ---
 
+## cURL de prueba
+
+Base URL: `https://qnehzrs7g4.execute-api.us-east-1.amazonaws.com`
+
+> El RUT debe ser válido (dígito verificador módulo 11). `12345678-9` es inválido; usa los ejemplos de abajo.
+
+### Register — usuario simple
+
+```bash
+curl -s -X POST https://qnehzrs7g4.execute-api.us-east-1.amazonaws.com/api/v1/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{
+    "rut": "12345678-5",
+    "password": "Temporal123!",
+    "email": "juan.perez@example.com",
+    "given_name": "Juan",
+    "family_name": "Pérez",
+    "phone_number": "+56912345678"
+  }' | jq
+```
+
+Respuesta esperada (`201`):
+```json
+{ "message": "usuario_creado" }
+```
+
+Errores posibles:
+
+| Status | `error` | Causa |
+|--------|---------|-------|
+| 400 | `rut_invalido` | RUT no pasa módulo 11 |
+| 400 | `campos_requeridos` | Falta email, nombre o apellido |
+| 409 | `usuario_ya_existe` | RUT ya registrado en Cognito |
+| 500 | `error_al_crear_usuario` | Error interno Cognito |
+
+---
+
+### Login
+
+```bash
+curl -s -X POST https://qnehzrs7g4.execute-api.us-east-1.amazonaws.com/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{
+    "rut": "12345678-5",
+    "password": "Temporal123!"
+  }' | jq
+```
+
+Respuesta esperada (`200`):
+```json
+{
+  "access_token": "eyJra...",
+  "id_token": "eyJra...",
+  "refresh_token": "eyJjb...",
+  "expires_in": 3600
+}
+```
+
+Errores posibles:
+
+| Status | `error` | Causa |
+|--------|---------|-------|
+| 400 | `rut_invalido` | RUT no pasa módulo 11 |
+| 401 | `credenciales_invalidas` | Contraseña incorrecta |
+| 404 | `usuario_no_encontrado` | RUT no existe en Cognito |
+| 500 | `error_interno` | Error interno Cognito |
+
+---
+
+### Register batch — archivo Excel
+
+El campo `file` debe ser un `.xlsx` con la estructura de la sección anterior (header en fila 1, datos desde fila 2).
+
+```bash
+curl -s -X POST https://qnehzrs7g4.execute-api.us-east-1.amazonaws.com/api/v1/auth/register/batch \
+  -F "file=@/ruta/al/archivo.xlsx" | jq
+```
+
+Respuesta esperada (`200`):
+```json
+{
+  "total": 3,
+  "created": 2,
+  "failed": 1,
+  "errors": [
+    { "row": 4, "rut": "11111111-2", "error": "rut_invalido" }
+  ]
+}
+```
+
+---
+
+### RUTs válidos para test rápido
+
+| RUT | Dígito verificador |
+|-----|--------------------|
+| `12345678-5` | 5 |
+| `11111111-1` | 1 |
+| `98765432-1` | 1 |
+
+---
+
 ## Estructura de archivos sugerida (Go)
 
 ```
