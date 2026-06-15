@@ -1,0 +1,92 @@
+name: Deploy Lambdas
+
+on:
+  push:
+    branches: [develop, main]
+    paths:
+      - '**-handler/**'
+      - 'pkg/**'
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.detect.outputs.matrix }}
+      has_changes: ${{ steps.detect.outputs.has_changes }}
+      environment: ${{ steps.detect.outputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Detectar Lambdas modificadas y entorno
+        id: detect
+        run: |
+          if [ "${{ github.ref_name }}" = "main" ]; then
+            echo "environment=prod" >> $GITHUB_OUTPUT
+          else
+            echo "environment=dev" >> $GITHUB_OUTPUT
+          fi
+
+          PKG_CHANGED=$(git diff --name-only HEAD~1 HEAD | grep '^pkg/' | wc -l)
+
+          if [ "$PKG_CHANGED" -gt 0 ]; then
+            CHANGED=$(ls -d *-handler 2>/dev/null | python3 -c "import sys,json; print(json.dumps([l.strip() for l in sys.stdin]))")
+          else
+            CHANGED=$(git diff --name-only HEAD~1 HEAD \
+              | grep -E '^[^/]+-handler/' \
+              | cut -d'/' -f1 \
+              | sort -u \
+              | python3 -c "import sys,json; print(json.dumps([l.strip() for l in sys.stdin]))")
+          fi
+
+          if [ "$CHANGED" = "[]" ] || [ -z "$CHANGED" ]; then
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+          else
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "matrix=$CHANGED" >> $GITHUB_OUTPUT
+          fi
+
+  deploy:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.has_changes == 'true'
+    runs-on: ubuntu-latest
+    environment: ${{ needs.detect-changes.outputs.environment }}
+    strategy:
+      matrix:
+        lambda: ${{ fromJson(needs.detect-changes.outputs.matrix) }}
+      max-parallel: 3
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ matrix.lambda }}/go.mod
+          cache-dependency-path: ${{ matrix.lambda }}/go.sum
+
+      - name: Build
+        working-directory: ${{ matrix.lambda }}
+        env:
+          GOOS: linux
+          GOARCH: arm64
+          CGO_ENABLED: "0"
+        run: go build -tags lambda.norpc -o bootstrap ./...
+
+      - name: Package
+        working-directory: ${{ matrix.lambda }}
+        run: zip function.zip bootstrap
+
+      - name: Deploy
+        working-directory: ${{ matrix.lambda }}
+        run: |
+          aws lambda update-function-code \
+            --function-name ${{ needs.detect-changes.outputs.environment }}-${{ vars.PROJECT_NAME }}-${{ matrix.lambda }} \
+            --zip-file fileb://function.zip \
+            --region ${{ vars.AWS_REGION }}
