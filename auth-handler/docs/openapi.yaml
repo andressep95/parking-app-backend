@@ -1,0 +1,413 @@
+openapi: "3.0.3"
+
+info:
+  title: parking-app — Auth Handler API
+  version: "1.0.0"
+  description: |
+    Endpoints de autenticación y registro de usuarios.
+
+    Implementados como una sola Lambda Go (`auth-handler`) detrás de API Gateway HTTP v2.
+    El identificador de usuario es el **RUT chileno** (formato `12345678-9`).
+    No hay verificación de email ni cambio de contraseña obligatorio — el backend
+    administra el ciclo de vida completo de los usuarios vía Cognito Admin API.
+
+servers:
+  - url: https://qnehzrs7g4.execute-api.us-east-1.amazonaws.com
+    description: dev
+
+tags:
+  - name: Auth
+    description: Login y registro de usuarios
+
+paths:
+
+  /api/v1/auth/login:
+    post:
+      tags: [Auth]
+      summary: Iniciar sesión
+      description: |
+        Autentica un usuario con RUT y contraseña contra Cognito.
+
+        El RUT se normaliza internamente antes de enviarlo a Cognito — se aceptan
+        los formatos `12.345.678-9`, `12345678-9` y `123456789`.
+
+        Devuelve los tres tokens de Cognito. El `access_token` debe enviarse en el
+        header `Authorization: Bearer <token>` para acceder a endpoints protegidos.
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+            examples:
+              rut_sin_puntos:
+                summary: RUT sin puntos
+                value:
+                  rut: "12345678-9"
+                  password: "MiPass123!"
+              rut_con_puntos:
+                summary: RUT con puntos (también aceptado)
+                value:
+                  rut: "12.345.678-9"
+                  password: "MiPass123!"
+      responses:
+        "200":
+          description: Autenticación exitosa
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginResponse"
+              example:
+                access_token: "eyJraWQiOiJBQkNE..."
+                id_token: "eyJraWQiOiJFRkdI..."
+                refresh_token: "eyJjdHkiOiJKV1Qi..."
+                expires_in: 3600
+        "400":
+          description: Body inválido o RUT con formato incorrecto
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                body_invalido:
+                  value:
+                    error: "body_invalido"
+                rut_invalido:
+                  value:
+                    error: "rut_invalido"
+        "401":
+          description: Contraseña incorrecta
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "credenciales_invalidas"
+        "404":
+          description: Usuario no encontrado en Cognito
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "usuario_no_encontrado"
+        "500":
+          description: Error interno
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "error_interno"
+
+  /api/v1/auth/register:
+    post:
+      tags: [Auth]
+      summary: Registrar un usuario
+      description: |
+        Crea un nuevo usuario en Cognito usando la Admin API.
+
+        Flujo interno:
+        1. `AdminCreateUser` con `MessageAction: SUPPRESS` — sin email de confirmación.
+        2. `AdminSetUserPassword` con `Permanent: true` — sin forzar cambio de contraseña.
+
+        El campo `phone_number` es opcional. Si se envía debe estar en formato E.164
+        (`+56912345678`).
+      operationId: register
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+            examples:
+              con_telefono:
+                summary: Registro completo con teléfono
+                value:
+                  rut: "12345678-9"
+                  password: "MiPass123!"
+                  email: "juan.perez@empresa.cl"
+                  given_name: "Juan"
+                  family_name: "Pérez"
+                  phone_number: "+56912345678"
+              sin_telefono:
+                summary: Sin teléfono (campo omitido)
+                value:
+                  rut: "87654321-K"
+                  password: "OtraPass456!"
+                  email: "maria.lopez@empresa.cl"
+                  given_name: "María"
+                  family_name: "López"
+      responses:
+        "201":
+          description: Usuario creado exitosamente
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessMessage"
+              example:
+                message: "usuario_creado"
+        "400":
+          description: Datos inválidos o campos requeridos faltantes
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                body_invalido:
+                  value:
+                    error: "body_invalido"
+                rut_invalido:
+                  value:
+                    error: "rut_invalido"
+                campos_requeridos:
+                  value:
+                    error: "campos_requeridos"
+        "409":
+          description: El RUT ya está registrado en Cognito
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "usuario_ya_existe"
+        "500":
+          description: Error al crear el usuario o al setear la contraseña
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                error_crear:
+                  value:
+                    error: "error_al_crear_usuario"
+                error_password:
+                  value:
+                    error: "error_al_setear_password"
+
+  /api/v1/auth/register/batch:
+    post:
+      tags: [Auth]
+      summary: Registro masivo desde Excel
+      description: |
+        Registra múltiples usuarios a partir de un archivo Excel (`.xlsx`).
+
+        El archivo se envía como campo `file` de un `multipart/form-data`.
+        API Gateway HTTP v2 entrega el body en base64 (`IsBase64Encoded: true`);
+        la Lambda lo decodifica internamente.
+
+        **Estructura de la planilla:**
+
+        | Col A | Col B    | Col C | Col D  | Col E    | Col F               |
+        |-------|----------|-------|--------|----------|---------------------|
+        | rut   | password | email | nombre | apellido | teléfono (opcional) |
+
+        - Fila 1 es el header y se ignora. Los datos empiezan en fila 2.
+        - La columna F puede estar vacía.
+
+        **Procesamiento:**
+        - Los usuarios se procesan en chunks de 25 para respetar el rate limit de
+          Cognito (`AdminCreateUser` ≈ 50 req/s).
+        - Los errores son parciales: si una fila falla, el resto continúa.
+        - La respuesta siempre es `200`. Los errores individuales se reportan en
+          `errors` con el número de fila para facilitar correcciones.
+      operationId: registerBatch
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: Archivo Excel (.xlsx). Primera hoja, fila 1 es header.
+      responses:
+        "200":
+          description: |
+            Procesamiento completado. El código `200` no garantiza que todos los
+            usuarios fueron creados — revisar `failed` y `errors`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BatchRegisterResponse"
+              examples:
+                todo_ok:
+                  summary: 3 de 3 creados sin errores
+                  value:
+                    total: 3
+                    created: 3
+                    failed: 0
+                con_errores:
+                  summary: 2 de 3 creados, 1 duplicado
+                  value:
+                    total: 3
+                    created: 2
+                    failed: 1
+                    errors:
+                      - row: 4
+                        rut: "11111111-1"
+                        error: "usuario_ya_existe"
+                rut_invalido_en_fila:
+                  summary: Fila con RUT mal formado
+                  value:
+                    total: 2
+                    created: 1
+                    failed: 1
+                    errors:
+                      - row: 3
+                        rut: "abc-xyz"
+                        error: "rut_invalido"
+        "400":
+          description: Problema con el archivo antes de procesar filas
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                body_invalido:
+                  value:
+                    error: "body_invalido"
+                archivo_requerido:
+                  value:
+                    error: "archivo_requerido"
+                archivo_invalido:
+                  value:
+                    error: "archivo_invalido"
+                planilla_vacia:
+                  value:
+                    error: "planilla_vacia"
+
+components:
+  schemas:
+
+    LoginRequest:
+      type: object
+      required: [rut, password]
+      properties:
+        rut:
+          type: string
+          description: |
+            RUT chileno. Formatos aceptados: `12345678-9`, `12.345.678-9`, `123456789`.
+            La Lambda normaliza internamente a `CUERPO-DV`.
+          example: "12345678-9"
+        password:
+          type: string
+          format: password
+          minLength: 8
+          example: "MiPass123!"
+
+    LoginResponse:
+      type: object
+      required: [access_token, id_token, refresh_token, expires_in]
+      properties:
+        access_token:
+          type: string
+          description: JWT para llamadas a endpoints protegidos (`Authorization Bearer`).
+        id_token:
+          type: string
+          description: JWT con atributos del usuario (email, nombre, `cognito:groups`).
+        refresh_token:
+          type: string
+          description: Token de larga duración para renovar el `access_token` sin re-login.
+        expires_in:
+          type: integer
+          description: Segundos hasta que expire el `access_token`.
+          example: 3600
+
+    RegisterRequest:
+      type: object
+      required: [rut, password, email, given_name, family_name]
+      properties:
+        rut:
+          type: string
+          description: RUT chileno (mismo formato que login).
+          example: "12345678-9"
+        password:
+          type: string
+          format: password
+          minLength: 8
+          description: Mínimo 8 caracteres, al menos una mayúscula y un número (política Cognito).
+          example: "MiPass123!"
+        email:
+          type: string
+          format: email
+          example: "juan.perez@empresa.cl"
+        given_name:
+          type: string
+          description: Nombre(s) del usuario.
+          example: "Juan"
+        family_name:
+          type: string
+          description: Apellido(s) del usuario.
+          example: "Pérez"
+        phone_number:
+          type: string
+          description: Teléfono en formato E.164. Opcional.
+          pattern: "^\\+[1-9]\\d{1,14}$"
+          example: "+56912345678"
+
+    BatchRegisterResponse:
+      type: object
+      required: [total, created, failed]
+      properties:
+        total:
+          type: integer
+          description: Total de filas de datos en el Excel (sin contar el header).
+          example: 10
+        created:
+          type: integer
+          description: Usuarios creados exitosamente.
+          example: 9
+        failed:
+          type: integer
+          description: Filas que no pudieron procesarse.
+          example: 1
+        errors:
+          type: array
+          description: Detalle de cada fila fallida. Ausente si `failed` es 0.
+          items:
+            $ref: "#/components/schemas/BatchError"
+
+    BatchError:
+      type: object
+      required: [row, rut, error]
+      properties:
+        row:
+          type: integer
+          description: Número de fila en el Excel (fila 1 es header, datos desde fila 2).
+          example: 4
+        rut:
+          type: string
+          description: RUT de la fila que falló tal como vino en el Excel.
+          example: "12345678-9"
+        error:
+          type: string
+          description: Código de error.
+          enum:
+            - rut_invalido
+            - fila_incompleta
+            - usuario_ya_existe
+            - error_al_crear_usuario
+            - error_al_setear_password
+            - error_desconocido
+
+    SuccessMessage:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+          example: "usuario_creado"
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          description: Código de error en snake_case.
+          example: "error_interno"
