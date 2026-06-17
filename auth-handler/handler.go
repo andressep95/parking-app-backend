@@ -27,6 +27,10 @@ func (h *Handler) Route(ctx context.Context, event events.APIGatewayV2HTTPReques
 		return h.HandleRegister(ctx, event)
 	case "POST /api/v1/auth/register/batch":
 		return h.HandleBatch(ctx, event)
+	case "POST /api/v1/auth/logout":
+		return h.HandleLogout(ctx, event)
+	case "DELETE /api/v1/auth/sessions/{user_id}":
+		return h.HandleAdminCloseSession(ctx, event)
 	default:
 		return jsonResponse(404, map[string]string{"error": "not_found"}), nil
 	}

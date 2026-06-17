@@ -63,10 +63,22 @@ func (h *Handler) HandleLogin(ctx context.Context, event events.APIGatewayV2HTTP
 
 	accessToken := aws.ToString(out.AuthenticationResult.AccessToken)
 
-	// Verificar si el usuario es CUSTOMER_OPERATOR y validar el terminal
-	isOperator, err := tokenHasGroup(accessToken, "CUSTOMER_OPERATOR")
+	// Decodificar claims del JWT para obtener sub y grupos en un solo paso
+	claims, err := jwtClaims(accessToken)
 	if err != nil {
 		return jsonResponse(500, map[string]string{"error": "error_interno"}), nil
+	}
+
+	sub, _ := claims["sub"].(string)
+
+	isOperator := false
+	if groups, ok := claims["cognito:groups"].([]any); ok {
+		for _, g := range groups {
+			if s, ok := g.(string); ok && s == "CUSTOMER_OPERATOR" {
+				isOperator = true
+				break
+			}
+		}
 	}
 
 	if isOperator {
@@ -78,6 +90,14 @@ func (h *Handler) HandleLogin(ctx context.Context, event events.APIGatewayV2HTTP
 		}
 	}
 
+	// Registrar sesión activa en DynamoDB (best-effort — no bloquea el login)
+	if sub != "" {
+		userID, _ := h.userIDBySub(ctx, sub)
+		if userID != "" {
+			_ = h.writeSessionActive(ctx, userID, "")
+		}
+	}
+
 	return jsonResponse(200, LoginResponse{
 		AccessToken:  accessToken,
 		IDToken:      aws.ToString(out.AuthenticationResult.IdToken),
@@ -86,39 +106,18 @@ func (h *Handler) HandleLogin(ctx context.Context, event events.APIGatewayV2HTTP
 	}), nil
 }
 
-// tokenHasGroup decodes the JWT payload (trusted, from Cognito response) and
-// checks if the given group is present in the cognito:groups claim.
-func tokenHasGroup(accessToken, group string) (bool, error) {
+// jwtClaims decodifica el payload del JWT (sin verificar firma — confiamos en el token de Cognito).
+func jwtClaims(accessToken string) (map[string]any, error) {
 	parts := strings.SplitN(accessToken, ".", 3)
 	if len(parts) != 3 {
-		return false, errors.New("jwt malformado")
+		return nil, errors.New("jwt malformado")
 	}
-
 	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		return false, err
+		return nil, err
 	}
-
 	var claims map[string]any
-	if err := json.Unmarshal(payload, &claims); err != nil {
-		return false, err
-	}
-
-	// cognito:groups es un array de strings en el JWT
-	raw, ok := claims["cognito:groups"]
-	if !ok {
-		return false, nil
-	}
-	groups, ok := raw.([]any)
-	if !ok {
-		return false, nil
-	}
-	for _, g := range groups {
-		if s, ok := g.(string); ok && s == group {
-			return true, nil
-		}
-	}
-	return false, nil
+	return claims, json.Unmarshal(payload, &claims)
 }
 
 // validateTerminal verifica que el terminal con ese serial_number exista en DynamoDB

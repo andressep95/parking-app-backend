@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"strconv"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -170,4 +171,78 @@ func (h *Handler) writeUserRecord(ctx context.Context, cognitoSub, rut string, r
 		TransactItems: transactItems,
 	})
 	return writeResult{UserID: userID, OrgID: orgID}, err
+}
+
+// ─── Sesiones ─────────────────────────────────────────────────────────────────
+
+// writeSessionActive escribe USER#<id>/SESSION#ACTIVE con TTL de 24h.
+func (h *Handler) writeSessionActive(ctx context.Context, userID, terminalID string) error {
+	now := time.Now().UTC()
+	item := map[string]types.AttributeValue{
+		"PK":         &types.AttributeValueMemberS{Value: "USER#" + userID},
+		"SK":         &types.AttributeValueMemberS{Value: "SESSION#ACTIVE"},
+		"session_id": &types.AttributeValueMemberS{Value: uuid.NewString()},
+		"started_at": &types.AttributeValueMemberS{Value: now.Format(time.RFC3339)},
+		"ttl":        &types.AttributeValueMemberN{Value: strconv.FormatInt(now.Add(24*time.Hour).Unix(), 10)},
+	}
+	if terminalID != "" {
+		item["terminal_id"] = &types.AttributeValueMemberS{Value: terminalID}
+	}
+	_, err := h.dynamo.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: aws.String(h.tableName),
+		Item:      item,
+	})
+	return err
+}
+
+// deleteSessionActive elimina USER#<id>/SESSION#ACTIVE.
+func (h *Handler) deleteSessionActive(ctx context.Context, userID string) error {
+	_, err := h.dynamo.DeleteItem(ctx, &dynamodb.DeleteItemInput{
+		TableName: aws.String(h.tableName),
+		Key: map[string]types.AttributeValue{
+			"PK": &types.AttributeValueMemberS{Value: "USER#" + userID},
+			"SK": &types.AttributeValueMemberS{Value: "SESSION#ACTIVE"},
+		},
+	})
+	return err
+}
+
+// userIDBySub busca el user_id interno via GSI1 usando el cognito_sub.
+func (h *Handler) userIDBySub(ctx context.Context, sub string) (string, error) {
+	out, err := h.dynamo.Query(ctx, &dynamodb.QueryInput{
+		TableName:              aws.String(h.tableName),
+		IndexName:              aws.String("GSI1"),
+		KeyConditionExpression: aws.String("GSI1PK = :pk"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":pk": &types.AttributeValueMemberS{Value: "COGNITO#" + sub},
+		},
+		Limit:                aws.Int32(1),
+		ProjectionExpression: aws.String("id"),
+	})
+	if err != nil || len(out.Items) == 0 {
+		return "", err
+	}
+	if v, ok := out.Items[0]["id"].(*types.AttributeValueMemberS); ok {
+		return v.Value, nil
+	}
+	return "", nil
+}
+
+// userRUTByID obtiene el RUT (username Cognito) del usuario por su UUID interno.
+func (h *Handler) userRUTByID(ctx context.Context, userID string) (string, error) {
+	out, err := h.dynamo.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: aws.String(h.tableName),
+		Key: map[string]types.AttributeValue{
+			"PK": &types.AttributeValueMemberS{Value: "USER#" + userID},
+			"SK": &types.AttributeValueMemberS{Value: "#METADATA"},
+		},
+		ProjectionExpression: aws.String("rut"),
+	})
+	if err != nil || out.Item == nil {
+		return "", err
+	}
+	if v, ok := out.Item["rut"].(*types.AttributeValueMemberS); ok {
+		return v.Value, nil
+	}
+	return "", nil
 }

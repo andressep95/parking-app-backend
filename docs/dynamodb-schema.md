@@ -165,7 +165,8 @@ Definidos desde la perspectiva de las operaciones reales del sistema.
 | AP07 | Obtener usuario por `id` | Alta | Resolución interna |
 | AP08 | Listar operadores de una Organization | Media | Dashboard admin/customer |
 | AP09 | Verificar sesión activa de un usuario (sesión única) | **Muy alta** | Cada login |
-| AP10 | Registrar / cerrar sesión de usuario | Alta | Login y logout |
+| AP10 | Registrar / cerrar sesión de usuario | Alta | Login y logout (propio) |
+| AP10b | Cerrar sesión remota (ADMIN) | Baja | Admin cierra sesión de cualquier usuario + `AdminUserGlobalSignOut` Cognito |
 
 ### Ubicaciones y terminales
 
@@ -311,6 +312,14 @@ GSI2PK = "EMAIL#<email>"             GSI2SK = "USER#<id>"    → AP06
 | `LOCATION#<id>` | `#METADATA` | Ítem principal de la ubicación | AP12 |
 | `ORGANIZATION#<org_id>` | `LOCATION#<location_id>` | Sedes de una Organization | AP11 |
 
+**Atributos del ítem `LOCATION#<id> / #METADATA`:**
+```
+id, org_id, location_name, address, city, timezone,
+location_status, created_at
+
+(sin GSI — se accede por PK directo o via link ORGANIZATION#)
+```
+
 ---
 
 #### Terminal
@@ -334,10 +343,24 @@ GSI1PK = "SERIAL#<serial_number>"    GSI1SK = "TERMINAL#<id>"    → AP09
 
 | PK | SK | Descripción | AP |
 |----|-----|-------------|-----|
-| `LOCATION#<location_id>` | `TARIFF#<vehicle_type>` | Tarifa activa por tipo | AP12, AP13 |
+| `LOCATION#<location_id>` | `TARIFF#<vehicle_type>` | Tarifa activa por tipo | AP16, AP17 |
 | `TARIFF_HISTORY#<location_id>` | `<vehicle_type>#<valid_from>` | Historial de tarifas archivadas | — |
 
-> Un ítem por tipo de vehículo por ubicación. Solo tarifas activas viven bajo `LOCATION#`. Los cambios de tarifa se archivan en `TARIFF_HISTORY#` antes de sobrescribir el ítem activo.
+**Atributos del ítem activo `LOCATION#<id> / TARIFF#<vehicle_type>`:**
+```
+tariff_id, vehicle_type, price_per_hour, minimum_charge,
+grace_minutes, valid_from
+
+(sin GSI — se accede siempre por GetItem con PK+SK conocidos)
+```
+
+**Atributos del ítem histórico `TARIFF_HISTORY#<location_id> / <vehicle_type>#<valid_from>`:**
+```
+tariff_id, vehicle_type, price_per_hour, minimum_charge,
+grace_minutes, valid_from, valid_until
+```
+
+> Un ítem por tipo de vehículo por ubicación. Solo tarifas activas viven bajo `LOCATION#`. Al modificar una tarifa: (1) archivar la tarifa actual escribiendo en `TARIFF_HISTORY#`; (2) sobrescribir `LOCATION#/TARIFF#` con la nueva tarifa. Los `tariff_snapshot` en `ParkingSession` preservan el precio vigente al momento del ingreso.
 
 ---
 
@@ -624,6 +647,23 @@ Cierre:
 }
 ```
 
+### Location
+
+```json
+{
+  "PK":              "LOCATION#l1l1l1l1-...",
+  "SK":              "#METADATA",
+  "id":              "l1l1l1l1-...",
+  "org_id":          "c0c0c0c0-...",
+  "location_name":   "Sucursal Centro",
+  "address":         "Av. Libertador Bernardo O'Higgins 1234",
+  "city":            "Santiago",
+  "timezone":        "America/Santiago",
+  "location_status": "ACTIVE",
+  "created_at":      "2026-06-14T10:00:00Z"
+}
+```
+
 ### Terminal
 
 ```json
@@ -633,7 +673,7 @@ Cierre:
   "id":                "t1t1t1t1-...",
   "serial_number":     "TUU-2024-001",
   "model":             "TUU Android v3",
-  "customer_id":       "c0c0c0c0-...",
+  "org_id":            "c0c0c0c0-...",
   "location_id":       "l1l1l1l1-...",
   "status":            "ONLINE",
   "active_operator_id":"a1b2c3d4-...",
