@@ -20,7 +20,6 @@ func main() {
 		cognito:    cognitoidentityprovider.NewFromConfig(cfg),
 		dynamo:     dynamodb.NewFromConfig(cfg),
 		userPoolID: os.Getenv("COGNITO_USER_POOL_ID"),
-		clientID:   os.Getenv("COGNITO_CLIENT_ID"),
 		tableName:  os.Getenv("DYNAMODB_TABLE_NAME"),
 	}
 

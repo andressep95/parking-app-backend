@@ -2,7 +2,7 @@ openapi: "3.0.3"
 
 info:
   title: parking-app — Auth Handler API
-  version: "1.0.0"
+  version: "2.0.0"
   description: |
     Endpoints de autenticación y registro de usuarios.
 
@@ -10,6 +10,13 @@ info:
     El identificador de usuario es el **RUT chileno** (formato `12345678-9`).
     No hay verificación de email ni cambio de contraseña obligatorio — el backend
     administra el ciclo de vida completo de los usuarios vía Cognito Admin API.
+
+    Al registrar se escribe simultáneamente en **Cognito** (fuente de verdad de auth)
+    y en **DynamoDB** (fuente de verdad de datos de negocio). Si DynamoDB falla,
+    se hace rollback eliminando el usuario de Cognito.
+
+    El login de operadores (`CUSTOMER_OPERATOR`) requiere adicionalmente el
+    `serial_number` del terminal desde donde se inicia sesión.
 
 servers:
   - url: https://qnehzrs7g4.execute-api.us-east-1.amazonaws.com
@@ -28,8 +35,17 @@ paths:
       description: |
         Autentica un usuario con RUT y contraseña contra Cognito.
 
-        El RUT se normaliza internamente antes de enviarlo a Cognito — se aceptan
-        los formatos `12.345.678-9`, `12345678-9` y `123456789`.
+        **Validación de terminal para operadores:**
+        Si el usuario autenticado pertenece al grupo `CUSTOMER_OPERATOR`,
+        el campo `serial_number` es **obligatorio**. La Lambda consulta
+        DynamoDB (GSI1 `SERIAL#<serial>`) para verificar que el terminal
+        esté registrado y no tenga `status: INACTIVE`. Si el operador
+        intenta hacer login sin un terminal registrado, recibe `403`.
+
+        Los usuarios `ADMIN` y `CUSTOMER` no necesitan `serial_number`.
+
+        El RUT se normaliza internamente — se aceptan los formatos
+        `12.345.678-9`, `12345678-9` y `123456789`.
 
         Devuelve los tres tokens de Cognito. El `access_token` debe enviarse en el
         header `Authorization: Bearer <token>` para acceder a endpoints protegidos.
@@ -41,16 +57,17 @@ paths:
             schema:
               $ref: "#/components/schemas/LoginRequest"
             examples:
-              rut_sin_puntos:
-                summary: RUT sin puntos
+              web_admin:
+                summary: Login web (ADMIN / CUSTOMER)
                 value:
-                  rut: "12345678-9"
+                  rut: "12345678-5"
                   password: "MiPass123!"
-              rut_con_puntos:
-                summary: RUT con puntos (también aceptado)
+              terminal_operator:
+                summary: Login desde terminal (CUSTOMER_OPERATOR)
                 value:
-                  rut: "12.345.678-9"
-                  password: "MiPass123!"
+                  rut: "87654321-K"
+                  password: "OtraPass456!"
+                  serial_number: "TUU-2024-001"
       responses:
         "200":
           description: Autenticación exitosa
@@ -64,18 +81,18 @@ paths:
                 refresh_token: "eyJjdHkiOiJKV1Qi..."
                 expires_in: 3600
         "400":
-          description: Body inválido o RUT con formato incorrecto
+          description: Body inválido, RUT incorrecto, o serial_number faltante para operador
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
               examples:
                 body_invalido:
-                  value:
-                    error: "body_invalido"
+                  value: { error: "body_invalido" }
                 rut_invalido:
-                  value:
-                    error: "rut_invalido"
+                  value: { error: "rut_invalido" }
+                serial_requerido:
+                  value: { error: "serial_number_requerido" }
         "401":
           description: Contraseña incorrecta
           content:
@@ -84,6 +101,17 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
               example:
                 error: "credenciales_invalidas"
+        "403":
+          description: Terminal no registrado o desactivado (solo CUSTOMER_OPERATOR)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                terminal_no_registrado:
+                  value: { error: "terminal_no_registrado" }
+                terminal_inactivo:
+                  value: { error: "terminal_inactivo" }
         "404":
           description: Usuario no encontrado en Cognito
           content:
@@ -106,14 +134,22 @@ paths:
       tags: [Auth]
       summary: Registrar un usuario
       description: |
-        Crea un nuevo usuario en Cognito usando la Admin API.
+        Crea un nuevo usuario en **Cognito** y en **DynamoDB** de forma atómica.
 
         Flujo interno:
         1. `AdminCreateUser` con `MessageAction: SUPPRESS` — sin email de confirmación.
         2. `AdminSetUserPassword` con `Permanent: true` — sin forzar cambio de contraseña.
+        3. `AdminAddUserToGroup` — asigna el rol al grupo Cognito correspondiente.
+        4. `TransactWriteItems` — escribe el ítem `USER#<id>/#METADATA` en DynamoDB.
+           Si el usuario tiene `customer_id` y `role: CUSTOMER_OPERATOR`, también
+           escribe el enlace `CUSTOMER#<cid>/OPERATOR#<id>` en la misma transacción.
+        5. **Rollback:** si el paso 4 falla, se llama `AdminDeleteUser` para eliminar
+           el usuario de Cognito y no dejar un huérfano.
 
-        El campo `phone_number` es opcional. Si se envía debe estar en formato E.164
-        (`+56912345678`).
+        El campo `role` por defecto es `CUSTOMER_OPERATOR`. Los roles válidos son
+        `ADMIN`, `CUSTOMER` y `CUSTOMER_OPERATOR`.
+
+        El campo `phone_number` debe estar en formato E.164 (`+56912345678`).
       operationId: register
       requestBody:
         required: true
@@ -122,32 +158,45 @@ paths:
             schema:
               $ref: "#/components/schemas/RegisterRequest"
             examples:
-              con_telefono:
-                summary: Registro completo con teléfono
+              operador_con_cliente:
+                summary: Operador asignado a un cliente y ubicación
                 value:
-                  rut: "12345678-9"
+                  rut: "12345678-5"
                   password: "MiPass123!"
                   email: "juan.perez@empresa.cl"
                   given_name: "Juan"
                   family_name: "Pérez"
                   phone_number: "+56912345678"
-              sin_telefono:
-                summary: Sin teléfono (campo omitido)
+                  role: "CUSTOMER_OPERATOR"
+                  customer_id: "c0c0c0c0-0000-0000-0000-000000000000"
+                  location_id: "l1l1l1l1-0000-0000-0000-000000000000"
+              cliente_empresa:
+                summary: Usuario Cliente (empresa)
                 value:
                   rut: "87654321-K"
                   password: "OtraPass456!"
-                  email: "maria.lopez@empresa.cl"
+                  email: "admin@miempresa.cl"
                   given_name: "María"
                   family_name: "López"
+                  role: "CUSTOMER"
+              minimo:
+                summary: Solo campos requeridos (rol por defecto CUSTOMER_OPERATOR)
+                value:
+                  rut: "11111111-1"
+                  password: "Pass1234!"
+                  email: "op@mail.cl"
+                  given_name: "Pedro"
+                  family_name: "Soto"
       responses:
         "201":
-          description: Usuario creado exitosamente
+          description: Usuario creado exitosamente en Cognito y DynamoDB
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/SuccessMessage"
+                $ref: "#/components/schemas/RegisterResponse"
               example:
                 message: "usuario_creado"
+                id: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
         "400":
           description: Datos inválidos o campos requeridos faltantes
           content:
@@ -156,14 +205,11 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
               examples:
                 body_invalido:
-                  value:
-                    error: "body_invalido"
+                  value: { error: "body_invalido" }
                 rut_invalido:
-                  value:
-                    error: "rut_invalido"
+                  value: { error: "rut_invalido" }
                 campos_requeridos:
-                  value:
-                    error: "campos_requeridos"
+                  value: { error: "campos_requeridos" }
         "409":
           description: El RUT ya está registrado en Cognito
           content:
@@ -173,18 +219,13 @@ paths:
               example:
                 error: "usuario_ya_existe"
         "500":
-          description: Error al crear el usuario o al setear la contraseña
+          description: Error al crear el usuario (Cognito o DynamoDB). Si Cognito OK pero DynamoDB falla, se hace rollback automático.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
-              examples:
-                error_crear:
-                  value:
-                    error: "error_al_crear_usuario"
-                error_password:
-                  value:
-                    error: "error_al_setear_password"
+              example:
+                error: "error_al_crear_usuario"
 
   /api/v1/auth/register/batch:
     post:
@@ -197,11 +238,16 @@ paths:
         API Gateway HTTP v2 entrega el body en base64 (`IsBase64Encoded: true`);
         la Lambda lo decodifica internamente.
 
+        Por cada fila se sigue el mismo flujo que el registro individual:
+        Cognito (`AdminCreateUser` + `AdminSetUserPassword`) y luego DynamoDB
+        (`TransactWriteItems`). El rol asignado a todos los usuarios del batch
+        es `CUSTOMER_OPERATOR`.
+
         **Estructura de la planilla:**
 
-        | Col A | Col B    | Col C | Col D  | Col E    | Col F               |
-        |-------|----------|-------|--------|----------|---------------------|
-        | rut   | password | email | nombre | apellido | teléfono (opcional) |
+        | Col A | Col B  | Col C    | Col D | Col E    | Col F               |
+        |-------|--------|----------|-------|----------|---------------------|
+        | rut   | nombre | apellido | email | password | teléfono (opcional) |
 
         - Fila 1 es el header y se ignora. Los datos empiezan en fila 2.
         - La columna F puede estar vacía.
@@ -242,7 +288,7 @@ paths:
                     created: 3
                     failed: 0
                 con_errores:
-                  summary: 2 de 3 creados, 1 duplicado
+                  summary: 2 de 3 creados, 1 con error en DynamoDB
                   value:
                     total: 3
                     created: 2
@@ -250,17 +296,7 @@ paths:
                     errors:
                       - row: 4
                         rut: "11111111-1"
-                        error: "usuario_ya_existe"
-                rut_invalido_en_fila:
-                  summary: Fila con RUT mal formado
-                  value:
-                    total: 2
-                    created: 1
-                    failed: 1
-                    errors:
-                      - row: 3
-                        rut: "abc-xyz"
-                        error: "rut_invalido"
+                        error: "error_dynamo"
         "400":
           description: Problema con el archivo antes de procesar filas
           content:
@@ -269,17 +305,13 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
               examples:
                 body_invalido:
-                  value:
-                    error: "body_invalido"
+                  value: { error: "body_invalido" }
                 archivo_requerido:
-                  value:
-                    error: "archivo_requerido"
+                  value: { error: "archivo_requerido" }
                 archivo_invalido:
-                  value:
-                    error: "archivo_invalido"
+                  value: { error: "archivo_invalido" }
                 planilla_vacia:
-                  value:
-                    error: "planilla_vacia"
+                  value: { error: "planilla_vacia" }
 
 components:
   schemas:
@@ -293,12 +325,19 @@ components:
           description: |
             RUT chileno. Formatos aceptados: `12345678-9`, `12.345.678-9`, `123456789`.
             La Lambda normaliza internamente a `CUERPO-DV`.
-          example: "12345678-9"
+          example: "12345678-5"
         password:
           type: string
           format: password
           minLength: 8
           example: "MiPass123!"
+        serial_number:
+          type: string
+          description: |
+            Serial del terminal TUU. **Requerido para usuarios CUSTOMER_OPERATOR.**
+            Ignorado para ADMIN y CUSTOMER. La Lambda valida contra DynamoDB GSI1
+            que el terminal esté registrado y no esté INACTIVE.
+          example: "TUU-2024-001"
 
     LoginResponse:
       type: object
@@ -325,7 +364,7 @@ components:
         rut:
           type: string
           description: RUT chileno (mismo formato que login).
-          example: "12345678-9"
+          example: "12345678-5"
         password:
           type: string
           format: password
@@ -349,6 +388,35 @@ components:
           description: Teléfono en formato E.164. Opcional.
           pattern: "^\\+[1-9]\\d{1,14}$"
           example: "+56912345678"
+        role:
+          type: string
+          description: Grupo Cognito a asignar. Por defecto `CUSTOMER_OPERATOR`.
+          enum: [ADMIN, CUSTOMER, CUSTOMER_OPERATOR]
+          default: CUSTOMER_OPERATOR
+          example: "CUSTOMER_OPERATOR"
+        customer_id:
+          type: string
+          format: uuid
+          description: ID del cliente al que pertenece el usuario. Opcional.
+          example: "c0c0c0c0-0000-0000-0000-000000000000"
+        location_id:
+          type: string
+          format: uuid
+          description: ID de la ubicación asignada al operador. Opcional.
+          example: "l1l1l1l1-0000-0000-0000-000000000000"
+
+    RegisterResponse:
+      type: object
+      required: [message, id]
+      properties:
+        message:
+          type: string
+          example: "usuario_creado"
+        id:
+          type: string
+          format: uuid
+          description: ID interno del usuario en DynamoDB.
+          example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 
     BatchRegisterResponse:
       type: object
@@ -390,18 +458,8 @@ components:
           enum:
             - rut_invalido
             - fila_incompleta
-            - usuario_ya_existe
             - error_al_crear_usuario
-            - error_al_setear_password
-            - error_desconocido
-
-    SuccessMessage:
-      type: object
-      required: [message]
-      properties:
-        message:
-          type: string
-          example: "usuario_creado"
+            - error_dynamo
 
     ErrorResponse:
       type: object

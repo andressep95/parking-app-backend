@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"io"
 	"mime"
@@ -75,13 +74,27 @@ func (h *Handler) HandleBatch(ctx context.Context, event events.APIGatewayV2HTTP
 				continue
 			}
 
-			resp, _ := h.createUser(ctx, normalized, row[1], row[2], row[3], row[4], safeGet(row, 5))
-			if resp.StatusCode == 201 {
-				result.Created++
-			} else {
+			// Excel columns: RUT, GivenName, FamilyName, Email, Password, Phone(optional)
+			sub, createErr := h.createCognitoUser(ctx, normalized, row[4], row[3], row[1], row[2], safeGet(row, 5))
+			if createErr != nil {
 				result.Failed++
-				result.Errors = append(result.Errors, BatchError{Row: rowNum, RUT: normalized, Error: extractErrorMsg(resp.Body)})
+				result.Errors = append(result.Errors, BatchError{Row: rowNum, RUT: normalized, Error: "error_al_crear_usuario"})
+				continue
 			}
+
+			batchReq := RegisterRequest{
+				RUT:         normalized,
+				Email:       row[3],
+				GivenName:   row[1],
+				FamilyName:  row[2],
+				PhoneNumber: safeGet(row, 5),
+			}
+			if _, writeErr := h.writeUserRecord(ctx, sub, normalized, batchReq, "CUSTOMER_OPERATOR"); writeErr != nil {
+				result.Failed++
+				result.Errors = append(result.Errors, BatchError{Row: rowNum, RUT: normalized, Error: "error_dynamo"})
+				continue
+			}
+			result.Created++
 		}
 	}
 
@@ -124,14 +137,4 @@ func safeGet(row []string, i int) string {
 		return row[i]
 	}
 	return ""
-}
-
-func extractErrorMsg(body string) string {
-	var m map[string]string
-	if err := json.Unmarshal([]byte(body), &m); err == nil {
-		if v, ok := m["error"]; ok {
-			return v
-		}
-	}
-	return "error_desconocido"
 }

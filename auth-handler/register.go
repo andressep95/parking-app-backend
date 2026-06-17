@@ -8,7 +8,7 @@ import (
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider"
-	"github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider/types"
+	cognitotypes "github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider/types"
 	"github.com/andressep95/auth-handler/rut"
 )
 
@@ -19,6 +19,9 @@ type RegisterRequest struct {
 	GivenName   string `json:"given_name"`
 	FamilyName  string `json:"family_name"`
 	PhoneNumber string `json:"phone_number,omitempty"`
+	Role        string `json:"role,omitempty"`        // ADMIN | CUSTOMER | CUSTOMER_OPERATOR (default)
+	CustomerID  string `json:"customer_id,omitempty"`
+	LocationID  string `json:"location_id,omitempty"`
 }
 
 func (h *Handler) HandleRegister(ctx context.Context, event events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
@@ -36,35 +39,69 @@ func (h *Handler) HandleRegister(ctx context.Context, event events.APIGatewayV2H
 		return jsonResponse(400, map[string]string{"error": "campos_requeridos"}), nil
 	}
 
-	return h.createUser(ctx, normalized, req.Password, req.Email, req.GivenName, req.FamilyName, req.PhoneNumber)
+	role := req.Role
+	if role == "" {
+		role = "CUSTOMER_OPERATOR"
+	}
+
+	sub, err := h.createCognitoUser(ctx, normalized, req.Password, req.Email, req.GivenName, req.FamilyName, req.PhoneNumber)
+	if err != nil {
+		var exists *cognitotypes.UsernameExistsException
+		if errors.As(err, &exists) {
+			return jsonResponse(409, map[string]string{"error": "usuario_ya_existe"}), nil
+		}
+		return jsonResponse(500, map[string]string{"error": "error_al_crear_usuario"}), nil
+	}
+
+	// Asignar grupo Cognito (best-effort: no falla el registro si esto falla)
+	_, _ = h.cognito.AdminAddUserToGroup(ctx, &cognitoidentityprovider.AdminAddUserToGroupInput{
+		UserPoolId: aws.String(h.userPoolID),
+		Username:   aws.String(normalized),
+		GroupName:  aws.String(role),
+	})
+
+	userID, err := h.writeUserRecord(ctx, sub, normalized, req, role)
+	if err != nil {
+		// rollback: eliminar usuario Cognito para no dejar huérfano
+		_, _ = h.cognito.AdminDeleteUser(ctx, &cognitoidentityprovider.AdminDeleteUserInput{
+			UserPoolId: aws.String(h.userPoolID),
+			Username:   aws.String(normalized),
+		})
+		return jsonResponse(500, map[string]string{"error": "error_al_crear_usuario"}), nil
+	}
+
+	return jsonResponse(201, map[string]string{"message": "usuario_creado", "id": userID}), nil
 }
 
-// createUser is shared by HandleRegister and HandleBatch.
-func (h *Handler) createUser(ctx context.Context, username, password, email, givenName, familyName, phone string) (events.APIGatewayV2HTTPResponse, error) {
-	attrs := []types.AttributeType{
+// createCognitoUser crea el usuario en Cognito y retorna su cognito_sub.
+func (h *Handler) createCognitoUser(ctx context.Context, username, password, email, givenName, familyName, phone string) (string, error) {
+	attrs := []cognitotypes.AttributeType{
 		{Name: aws.String("email"),       Value: aws.String(email)},
 		{Name: aws.String("given_name"),  Value: aws.String(givenName)},
 		{Name: aws.String("family_name"), Value: aws.String(familyName)},
 	}
 	if phone != "" {
-		attrs = append(attrs, types.AttributeType{
-			Name:  aws.String("phone_number"),
-			Value: aws.String(phone),
+		attrs = append(attrs, cognitotypes.AttributeType{
+			Name: aws.String("phone_number"), Value: aws.String(phone),
 		})
 	}
 
-	_, err := h.cognito.AdminCreateUser(ctx, &cognitoidentityprovider.AdminCreateUserInput{
+	out, err := h.cognito.AdminCreateUser(ctx, &cognitoidentityprovider.AdminCreateUserInput{
 		UserPoolId:     aws.String(h.userPoolID),
 		Username:       aws.String(username),
-		MessageAction:  types.MessageActionTypeSuppress,
+		MessageAction:  cognitotypes.MessageActionTypeSuppress,
 		UserAttributes: attrs,
 	})
 	if err != nil {
-		var exists *types.UsernameExistsException
-		if errors.As(err, &exists) {
-			return jsonResponse(409, map[string]string{"error": "usuario_ya_existe"}), nil
+		return "", err
+	}
+
+	var sub string
+	for _, attr := range out.User.Attributes {
+		if aws.ToString(attr.Name) == "sub" {
+			sub = aws.ToString(attr.Value)
+			break
 		}
-		return jsonResponse(500, map[string]string{"error": "error_al_crear_usuario"}), nil
 	}
 
 	_, err = h.cognito.AdminSetUserPassword(ctx, &cognitoidentityprovider.AdminSetUserPasswordInput{
@@ -73,9 +110,5 @@ func (h *Handler) createUser(ctx context.Context, username, password, email, giv
 		Password:   aws.String(password),
 		Permanent:  true,
 	})
-	if err != nil {
-		return jsonResponse(500, map[string]string{"error": "error_al_setear_password"}), nil
-	}
-
-	return jsonResponse(201, map[string]string{"message": "usuario_creado"}), nil
+	return sub, err
 }

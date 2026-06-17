@@ -6,13 +6,16 @@ import (
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 )
 
-// Handler holds shared Cognito client and config for all endpoints.
+// Handler holds shared clients and config for all endpoints.
 type Handler struct {
 	cognito    *cognitoidentityprovider.Client
+	dynamo     *dynamodb.Client
 	userPoolID string
 	clientID   string
+	tableName  string
 }
 
 // Route dispatches to the correct handler based on API Gateway HTTP v2 RouteKey.
