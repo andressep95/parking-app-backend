@@ -1,0 +1,243 @@
+openapi: "3.1.0"
+info:
+  title: Organization Handler API
+  version: "1.0.0"
+  description: |
+    CRUD de organizaciones (empresas cliente).
+    Las organizaciones son entidades DynamoDB puras — no tienen entidad Cognito propia.
+    Cada organización tiene exactamente un usuario CUSTOMER como administrador.
+
+servers:
+  - url: https://{api_id}.execute-api.{region}.amazonaws.com
+    variables:
+      api_id:
+        default: "your-api-id"
+      region:
+        default: "us-east-1"
+
+security:
+  - CognitoJWT: []
+
+paths:
+  /api/v1/organizations:
+    get:
+      summary: Listar organizaciones
+      description: |
+        Devuelve todas las organizaciones. Solo accesible para ADMIN.
+        Realiza un Scan con filtro `begins_with(PK, "ORGANIZATION#") AND SK = "#METADATA"`.
+        Máximo 100 resultados por página.
+      tags: [Organizations]
+      responses:
+        "200":
+          description: Lista de organizaciones
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/OrgResponse"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/organizations/{id}:
+    get:
+      summary: Obtener organización
+      description: |
+        ADMIN puede consultar cualquier organización.
+        CUSTOMER solo puede consultar la suya (verificado vía GSI1 con su Cognito sub).
+      tags: [Organizations]
+      parameters:
+        - $ref: "#/components/parameters/OrgID"
+      responses:
+        "200":
+          description: Organización encontrada
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrgResponse"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+    put:
+      summary: Actualizar organización
+      description: |
+        Actualiza los campos de la organización (nombre, rut, email, teléfono).
+        ADMIN puede actualizar cualquier organización.
+        CUSTOMER solo puede actualizar la suya.
+      tags: [Organizations]
+      parameters:
+        - $ref: "#/components/parameters/OrgID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateOrgRequest"
+      responses:
+        "200":
+          description: Organización actualizada
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+    delete:
+      summary: Eliminar organización
+      description: |
+        Elimina el item `#METADATA` y el link `ORGANIZATION#<id>/USER#<admin_id>`.
+        Los links de operadores y sedes deben limpiarse por separado.
+        Solo ADMIN.
+      tags: [Organizations]
+      parameters:
+        - $ref: "#/components/parameters/OrgID"
+      responses:
+        "200":
+          description: Organización eliminada
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/organizations/{id}/activate:
+    post:
+      summary: Activar organización
+      description: Establece `org_status = ACTIVE`. Solo ADMIN.
+      tags: [Organizations]
+      parameters:
+        - $ref: "#/components/parameters/OrgID"
+      responses:
+        "200":
+          description: Organización activada
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/organizations/{id}/deactivate:
+    post:
+      summary: Desactivar organización
+      description: Establece `org_status = INACTIVE`. Solo ADMIN.
+      tags: [Organizations]
+      parameters:
+        - $ref: "#/components/parameters/OrgID"
+      responses:
+        "200":
+          description: Organización desactivada
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+components:
+  securitySchemes:
+    CognitoJWT:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Token JWT emitido por Cognito. API Gateway valida la firma antes de invocar la Lambda.
+
+  parameters:
+    OrgID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: UUID de la organización
+
+  schemas:
+    OrgResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        org_name:
+          type: string
+          example: "Parking SA"
+        rut_empresa:
+          type: string
+          example: "76.123.456-7"
+        email:
+          type: string
+          format: email
+        phone_number:
+          type: string
+        status:
+          type: string
+          enum: [ACTIVE, INACTIVE]
+        admin_user_id:
+          type: string
+          format: uuid
+          description: UUID del usuario CUSTOMER que administra esta organización
+        created_at:
+          type: string
+          format: date-time
+
+    UpdateOrgRequest:
+      type: object
+      description: Al menos un campo requerido.
+      properties:
+        org_name:
+          type: string
+        rut_empresa:
+          type: string
+        email:
+          type: string
+          format: email
+        phone_number:
+          type: string
+
+    MessageResponse:
+      type: object
+      properties:
+        message:
+          type: string
+
+  responses:
+    BadRequest:
+      description: Solicitud inválida
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+    Forbidden:
+      description: Sin permiso
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+                example: "sin_permiso"
+    NotFound:
+      description: Organización no encontrada
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+                example: "organizacion_no_encontrada"
