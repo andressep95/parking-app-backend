@@ -5,6 +5,7 @@ bootstrap
 # Local build artifacts
 auth-handler/auth-handler
 user-handler/user-handler
+organization-handler/organization-handler
 
 # Go test cache
 *.test
