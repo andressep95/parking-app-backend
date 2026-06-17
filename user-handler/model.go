@@ -17,7 +17,7 @@ type UserItem struct {
 	Phone      string `dynamodbav:"phone_number,omitempty"`
 	Role       string `dynamodbav:"role"`
 	Status     string `dynamodbav:"user_status"`
-	CustomerID string `dynamodbav:"customer_id,omitempty"`
+	OrgID      string `dynamodbav:"org_id,omitempty"`
 	LocationID string `dynamodbav:"location_id,omitempty"`
 	CognitoSub string `dynamodbav:"cognito_sub"`
 	CreatedAt  string `dynamodbav:"created_at"`
@@ -33,7 +33,7 @@ type UserResponse struct {
 	Phone      string `json:"phone_number,omitempty"`
 	Role       string `json:"role"`
 	Status     string `json:"status"`
-	CustomerID string `json:"customer_id,omitempty"`
+	OrgID      string `json:"org_id,omitempty"`
 	LocationID string `json:"location_id,omitempty"`
 	CreatedAt  string `json:"created_at"`
 }
@@ -48,7 +48,7 @@ func toResponse(u UserItem) UserResponse {
 		Phone:      u.Phone,
 		Role:       u.Role,
 		Status:     u.Status,
-		CustomerID: u.CustomerID,
+		OrgID:      u.OrgID,
 		LocationID: u.LocationID,
 		CreatedAt:  u.CreatedAt,
 	}

@@ -11,8 +11,8 @@ import (
 )
 
 // ListUsers GET /api/v1/users
-// ADMIN puede listar todos (?customer_id= opcional) o pasar customer_id para filtrar.
-// CUSTOMER debe pasar ?customer_id= de su propia empresa.
+// ADMIN puede listar todos (?org_id= opcional) o filtrar por organización.
+// CUSTOMER debe pasar ?org_id= de su propia organización.
 func (h *Handler) ListUsers(ctx context.Context, event events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
 	groups := callerGroups(event)
 	isAdmin := hasGroup(groups, "ADMIN")
@@ -22,27 +22,27 @@ func (h *Handler) ListUsers(ctx context.Context, event events.APIGatewayV2HTTPRe
 		return jsonResponse(403, map[string]string{"error": "sin_permiso"}), nil
 	}
 
-	customerID := event.QueryStringParameters["customer_id"]
+	orgID := event.QueryStringParameters["org_id"]
 
-	// Sin customer_id solo ADMIN puede hacer scan (limitado a 50)
-	if customerID == "" {
+	// Sin org_id solo ADMIN puede hacer scan (limitado a 50)
+	if orgID == "" {
 		if !isAdmin {
-			return jsonResponse(400, map[string]string{"error": "customer_id_requerido"}), nil
+			return jsonResponse(400, map[string]string{"error": "org_id_requerido"}), nil
 		}
 		return h.scanAllUsers(ctx)
 	}
 
-	return h.listByCustomer(ctx, customerID)
+	return h.listByOrg(ctx, orgID)
 }
 
-// listByCustomer queries CUSTOMER#<id>/OPERATOR#* links and batch-fetches user items.
-func (h *Handler) listByCustomer(ctx context.Context, customerID string) (events.APIGatewayV2HTTPResponse, error) {
-	// Step 1: Query todos los links CUSTOMER#<id>/OPERATOR#*
+// listByOrg queries ORGANIZATION#<id>/OPERATOR#* links and batch-fetches user items.
+func (h *Handler) listByOrg(ctx context.Context, orgID string) (events.APIGatewayV2HTTPResponse, error) {
+	// Step 1: Query todos los links ORGANIZATION#<id>/OPERATOR#*
 	qOut, err := h.dynamo.Query(ctx, &dynamodb.QueryInput{
 		TableName:              aws.String(h.tableName),
 		KeyConditionExpression: aws.String("PK = :pk AND begins_with(SK, :prefix)"),
 		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":pk":     &types.AttributeValueMemberS{Value: "CUSTOMER#" + customerID},
+			":pk":     &types.AttributeValueMemberS{Value: "ORGANIZATION#" + orgID},
 			":prefix": &types.AttributeValueMemberS{Value: "OPERATOR#"},
 		},
 		ProjectionExpression: aws.String("SK"),

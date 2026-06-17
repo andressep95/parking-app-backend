@@ -127,8 +127,9 @@ Los tres coexisten en el mismo GSI1. Los prefijos evitan colisiones. Esta técni
 
 | Entidad | Descripción |
 |---------|-------------|
-| `User` | Admin (Haulmer), Customer (empresa), Customer Operator (cajero) |
-| `Location` | Sucursal o estacionamiento de un Customer |
+| `Organization` | Empresa de estacionamiento cliente de Haulmer. Creada por ADMIN junto con su usuario CUSTOMER. |
+| `User` | Admin (Haulmer), Customer (admin de organización), Customer Operator (cajero en terminal) |
+| `Location` | Sucursal o estacionamiento de una Organization |
 | `Terminal` | Dispositivo Android TUU físico en una Location |
 | `UserSession` | Sesión de login — enforcement de sesión única |
 | `Tariff` | Precio por tipo de vehículo para una Location |
@@ -138,81 +139,92 @@ Los tres coexisten en el mismo GSI1. Los prefijos evitan colisiones. Esta técni
 | `Transaction` | Pago procesado por TUU para una ParkingSession |
 | `AuditLog` | Trazabilidad de acciones administrativas (inmutable) |
 
+> **Jerarquía:** `Organization → Location → Terminal`. El `CUSTOMER_OPERATOR` opera en un terminal de una Location. El usuario `CUSTOMER` es el admin/dueño de la Organization (1 CUSTOMER por Organization).
+
 ---
 
 ## Patrones de acceso
 
 Definidos desde la perspectiva de las operaciones reales del sistema.
 
+### Organizaciones
+
+| # | Patrón | Frecuencia | Notas |
+|---|--------|-----------|-------|
+| AP01 | Crear organización + usuario CUSTOMER (atómico) | Baja | Solo ADMIN — TransactWrite 3 ítems |
+| AP02 | Obtener organización por `id` | Media | Dashboard admin/customer |
+| AP03 | Listar todas las organizaciones | Baja | Solo ADMIN — scan limitado |
+| AP04 | Obtener admin de una organización | Baja | Admin panel |
+
 ### Autenticación y usuarios
 
 | # | Patrón | Frecuencia | Notas |
 |---|--------|-----------|-------|
-| AP01 | Obtener usuario por `cognito_sub` | **Muy alta** | Cada llamada autenticada — hot path |
-| AP02 | Obtener usuario por `email` | Media | Login web, búsqueda admin |
-| AP03 | Obtener usuario por `id` | Alta | Resolución interna |
-| AP04 | Listar operadores de un Customer | Media | Dashboard admin |
-| AP05 | Verificar sesión activa de un usuario (sesión única) | **Muy alta** | Cada login |
-| AP06 | Registrar / cerrar sesión de usuario | Alta | Login y logout |
+| AP05 | Obtener usuario por `cognito_sub` | **Muy alta** | Cada llamada autenticada — hot path |
+| AP06 | Obtener usuario por `email` | Media | Login web, búsqueda admin |
+| AP07 | Obtener usuario por `id` | Alta | Resolución interna |
+| AP08 | Listar operadores de una Organization | Media | Dashboard admin/customer |
+| AP09 | Verificar sesión activa de un usuario (sesión única) | **Muy alta** | Cada login |
+| AP10 | Registrar / cerrar sesión de usuario | Alta | Login y logout |
 
 ### Ubicaciones y terminales
 
 | # | Patrón | Frecuencia | Notas |
 |---|--------|-----------|-------|
-| AP07 | Listar Locations de un Customer | Media | Panel admin Customer |
-| AP08 | Obtener Location por `id` | Alta | Validación en operaciones |
-| AP09 | Obtener Terminal por `serial_number` | **Muy alta** | Autenticación de dispositivo — hot path |
-| AP10 | Listar Terminales de una Location | Media | Dashboard de sede |
-| AP11 | Actualizar estado de Terminal (heartbeat) | Alta | Cada pocos minutos por dispositivo |
+| AP11 | Listar Locations de una Organization | Media | Panel admin Customer |
+| AP12 | Obtener Location por `id` | Alta | Validación en operaciones |
+| AP13 | Obtener Terminal por `serial_number` | **Muy alta** | Autenticación de dispositivo — hot path |
+| AP14 | Listar Terminales de una Location | Media | Dashboard de sede |
+| AP15 | Actualizar estado de Terminal (heartbeat) | Alta | Cada pocos minutos por dispositivo |
 
 ### Tarifas
 
 | # | Patrón | Frecuencia | Notas |
 |---|--------|-----------|-------|
-| AP12 | Obtener tarifa activa por `location_id` + `vehicle_type` | **Muy alta** | Cada ingreso de vehículo — hot path |
-| AP13 | Listar todas las tarifas de una Location | Media | Configuración, display terminal |
+| AP16 | Obtener tarifa activa por `location_id` + `vehicle_type` | **Muy alta** | Cada ingreso de vehículo — hot path |
+| AP17 | Listar todas las tarifas de una Location | Media | Configuración, display terminal |
 
 ### Vehículos
 
 | # | Patrón | Frecuencia | Notas |
 |---|--------|-----------|-------|
-| AP14 | Obtener vehículo por patente | Alta | Auto-fill de `vehicle_type` al ingresar |
+| AP18 | Obtener vehículo por patente | Alta | Auto-fill de `vehicle_type` al ingresar |
 
 ### Estacionamiento (operaciones en tiempo real)
 
 | # | Patrón | Frecuencia | Notas |
 |---|--------|-----------|-------|
-| AP15 | Listar sesiones ACTIVAS de una Location | **Muy alta** | Dashboard en tiempo real |
-| AP16 | Buscar sesión ACTIVA por patente | **Muy alta** | Cobro / salida de vehículo — hot path |
-| AP17 | Crear sesión de estacionamiento (ingreso) | Alta | Por cada vehículo que entra |
-| AP18 | Cerrar sesión de estacionamiento (salida + cobro) | Alta | Por cada vehículo que sale |
-| AP19 | Obtener ParkingSession por `id` | Alta | Cobro, auditoría, reimpresión |
+| AP19 | Listar sesiones ACTIVAS de una Location | **Muy alta** | Dashboard en tiempo real |
+| AP20 | Buscar sesión ACTIVA por patente | **Muy alta** | Cobro / salida de vehículo — hot path |
+| AP21 | Crear sesión de estacionamiento (ingreso) | Alta | Por cada vehículo que entra |
+| AP22 | Cerrar sesión de estacionamiento (salida + cobro) | Alta | Por cada vehículo que sale |
+| AP23 | Obtener ParkingSession por `id` | Alta | Cobro, auditoría, reimpresión |
 
 ### Turnos (shifts)
 
 | # | Patrón | Frecuencia | Notas |
 |---|--------|-----------|-------|
-| AP20 | Obtener shift ACTIVO de un operador | **Muy alta** | Cada operación del terminal — hot path |
-| AP21 | Abrir / cerrar shift de operador | Baja | Inicio y fin de turno |
-| AP22 | Historial de shifts de un operador | Baja | Dashboard operador |
-| AP23 | Listar ParkingSessions de un shift | Media | Cierre de turno |
-| AP24 | Listar Transactions de un shift | Media | Cierre de turno, cuadre de caja |
+| AP24 | Obtener shift ACTIVO de un operador | **Muy alta** | Cada operación del terminal — hot path |
+| AP25 | Abrir / cerrar shift de operador | Baja | Inicio y fin de turno |
+| AP26 | Historial de shifts de un operador | Baja | Dashboard operador |
+| AP27 | Listar ParkingSessions de un shift | Media | Cierre de turno |
+| AP28 | Listar Transactions de un shift | Media | Cierre de turno, cuadre de caja |
 
 ### Reportes
 
 | # | Patrón | Frecuencia | Notas |
 |---|--------|-----------|-------|
-| AP25 | Sesiones por Location + rango de fechas | Media | Reportes históricos |
-| AP26 | Transacciones por Location + rango de fechas | Media | Reportes de recaudación — ver nota ⚠️ |
+| AP29 | Sesiones por Location + rango de fechas | Media | Reportes históricos |
+| AP30 | Transacciones por Location + rango de fechas | Media | Reportes de recaudación — ver nota ⚠️ |
 
 ### Auditoría
 
 | # | Patrón | Frecuencia | Notas |
 |---|--------|-----------|-------|
-| AP27 | Audit log por entidad + `entity_id` | Baja | Trazabilidad admin |
-| AP28 | Audit log por `user_id` + rango de fechas | Baja | Acciones de un usuario |
+| AP31 | Audit log por entidad + `entity_id` | Baja | Trazabilidad admin |
+| AP32 | Audit log por `user_id` + rango de fechas | Baja | Acciones de un usuario |
 
-> ⚠️ **AP26 — Operación multi-step (N+1):** No existe una query directa de transacciones por Location + fecha sin pasar por shifts. El flujo es: (1) Query shifts de la Location en el rango de fechas → obtiene N shift_ids; (2) Query transacciones por cada shift_id. Es aceptable para reportes admin ocasionales. Si esto se vuelve frecuente, se añade un GSI dedicado.
+> ⚠️ **AP30 — Operación multi-step (N+1):** No existe una query directa de transacciones por Location + fecha sin pasar por shifts. El flujo es: (1) Query shifts de la Location en el rango de fechas → obtiene N shift_ids; (2) Query transacciones por cada shift_id. Es aceptable para reportes admin ocasionales. Si esto se vuelve frecuente, se añade un GSI dedicado.
 
 ---
 
@@ -232,23 +244,50 @@ Definidos desde la perspectiva de las operaciones reales del sistema.
 
 ### Patrones PK / SK por entidad
 
+#### Organization
+
+| PK | SK | Descripción | AP |
+|----|-----|-------------|-----|
+| `ORGANIZATION#<id>` | `#METADATA` | Ítem principal de la organización | AP02 |
+| `ORGANIZATION#<id>` | `USER#<user_id>` | Link al usuario CUSTOMER admin (1:1) | AP04 |
+| `ORGANIZATION#<id>` | `OPERATOR#<user_id>` | Link a operadores de la organización | AP08 |
+| `ORGANIZATION#<id>` | `LOCATION#<location_id>` | Link a sedes de la organización | AP11 |
+
+**Atributos del ítem `ORGANIZATION#<id> / #METADATA`:**
+```
+id, org_name, rut_empresa, org_email, phone_number,
+org_status, admin_user_id, created_at
+
+(sin GSI — se accede por PK directo o scan para ADMIN)
+```
+
+> **Creación atómica:** ADMIN crea en un solo TransactWrite:
+> 1. `Put ORGANIZATION#<org_id>/#METADATA`
+> 2. `Put USER#<user_id>/#METADATA` (usuario CUSTOMER con org_id = org_id)
+> 3. `Put ORGANIZATION#<org_id>/USER#<user_id>` (link org → admin)
+
+---
+
 #### User
 
 | PK | SK | Descripción | AP |
 |----|-----|-------------|-----|
-| `USER#<id>` | `#METADATA` | Ítem principal del usuario | AP03 |
-| `CUSTOMER#<customer_id>` | `OPERATOR#<user_id>` | Operadores de un Customer | AP04 |
+| `USER#<id>` | `#METADATA` | Ítem principal del usuario | AP07 |
+| `ORGANIZATION#<org_id>` | `OPERATOR#<user_id>` | Link operador → organización | AP08 |
 
 **Atributos del ítem `USER#<id> / #METADATA`:**
 ```
-id, cognito_sub, email, full_name, company_name, role,
-status, customer_id, location_id, created_at, updated_at
+id, cognito_sub, email_addr, given_name, family_name,
+phone_number, role, user_status, org_id, location_id,
+created_at
 
-GSI1PK = "COGNITO#<cognito_sub>"     GSI1SK = "USER#<id>"    → AP01
-GSI2PK = "EMAIL#<email>"             GSI2SK = "USER#<id>"    → AP02
+GSI1PK = "COGNITO#<cognito_sub>"     GSI1SK = "USER#<id>"    → AP05
+GSI2PK = "EMAIL#<email>"             GSI2SK = "USER#<id>"    → AP06
 ```
 
 > **Nota GSI:** el ítem User aparece en **ambos** GSIs simultáneamente. GSI1 para el lookup por `cognito_sub` (hot path, frecuencia muy alta), GSI2 para lookup por `email` (frecuencia media).
+>
+> **Atributo `org_id`:** para CUSTOMER, `org_id` apunta a la organización que administra. Para CUSTOMER_OPERATOR, apunta a la organización donde trabaja.
 
 ---
 
@@ -269,8 +308,8 @@ GSI2PK = "EMAIL#<email>"             GSI2SK = "USER#<id>"    → AP02
 
 | PK | SK | Descripción | AP |
 |----|-----|-------------|-----|
-| `LOCATION#<id>` | `#METADATA` | Ítem principal de la ubicación | AP08 |
-| `CUSTOMER#<customer_id>` | `LOCATION#<location_id>` | Ubicaciones de un Customer | AP07 |
+| `LOCATION#<id>` | `#METADATA` | Ítem principal de la ubicación | AP12 |
+| `ORGANIZATION#<org_id>` | `LOCATION#<location_id>` | Sedes de una Organization | AP11 |
 
 ---
 
@@ -387,9 +426,9 @@ GSI2PK = "AUDIT_USER#<user_id>"    GSI2SK = "<occurred_at>"    → AP28
 
 | GSI1PK | GSI1SK | Entidad | AP |
 |--------|--------|---------|-----|
-| `COGNITO#<cognito_sub>` | `USER#<id>` | User | AP01 |
-| `SERIAL#<serial_number>` | `TERMINAL#<id>` | Terminal | AP09 |
-| `PLATE#<plate>` | `ACTIVE` | ParkingSession activa | AP16 |
+| `COGNITO#<cognito_sub>` | `USER#<id>` | User | AP05 |
+| `SERIAL#<serial_number>` | `TERMINAL#<id>` | Terminal | AP13 |
+| `PLATE#<plate>` | `ACTIVE` | ParkingSession activa | AP20 |
 
 > **Sparse:** solo los ítems con `GSI1PK` definido aparecen. ParkingSessions solo tienen `GSI1PK` mientras están ACTIVAS. Terminals y Users siempre tienen `GSI1PK`.
 >
@@ -404,8 +443,8 @@ GSI2PK = "AUDIT_USER#<user_id>"    GSI2SK = "<occurred_at>"    → AP28
 
 | GSI2PK | GSI2SK | Entidad | AP |
 |--------|--------|---------|-----|
-| `EMAIL#<email>` | `USER#<id>` | User | AP02 |
-| `AUDIT_USER#<user_id>` | `<occurred_at>` | AuditLog | AP28 |
+| `EMAIL#<email>` | `USER#<id>` | User | AP06 |
+| `AUDIT_USER#<user_id>` | `<occurred_at>` | AuditLog | AP32 |
 
 > **Overloading de GSI2:** Users y AuditLogs comparten el mismo GSI2 mediante prefijos distintos (`EMAIL#` vs `AUDIT_USER#`). No hay colisión porque los prefijos son únicos y los queries siempre especifican el prefijo completo.
 >
@@ -417,38 +456,49 @@ GSI2PK = "AUDIT_USER#<user_id>"    GSI2SK = "<occurred_at>"    → AP28
 
 | AP | Operación DynamoDB | PK | SK / condición |
 |----|-------------------|----|---------------|
-| AP01 | `Query GSI1` | `COGNITO#<sub>` | — |
-| AP02 | `Query GSI2` | `EMAIL#<email>` | — |
-| AP03 | `GetItem` | `USER#<id>` | `#METADATA` |
-| AP04 | `Query` | `CUSTOMER#<id>` | `begins_with(SK, "OPERATOR#")` |
-| AP05 | `GetItem` | `USER#<id>` | `SESSION#ACTIVE` |
-| AP06 | `PutItem / DeleteItem` | `USER#<id>` | `SESSION#ACTIVE` |
-| AP07 | `Query` | `CUSTOMER#<id>` | `begins_with(SK, "LOCATION#")` |
-| AP08 | `GetItem` | `LOCATION#<id>` | `#METADATA` |
-| AP09 | `Query GSI1` | `SERIAL#<serial>` | — |
-| AP10 | `Query` | `LOCATION#<id>` | `begins_with(SK, "TERMINAL#")` |
-| AP11 | `UpdateItem` | `TERMINAL#<id>` | `#METADATA` |
-| AP12 | `GetItem` | `LOCATION#<id>` | `TARIFF#<vehicle_type>` |
-| AP13 | `Query` | `LOCATION#<id>` | `begins_with(SK, "TARIFF#")` |
-| AP14 | `GetItem` | `VEHICLE#<plate>` | `#METADATA` |
-| AP15 | `Query` | `LOCATION#<id>` | `begins_with(SK, "PARKING#ACTIVE#")` |
-| AP16 | `Query GSI1` | `PLATE#<plate>` | `GSI1SK = "ACTIVE"` |
-| AP17 | `TransactWrite` | múltiples | Ver detalle AP17 abajo |
-| AP18 | `TransactWrite` | múltiples | Ver detalle AP18 abajo |
-| AP19 | `GetItem` | `PARKING#<id>` | `#METADATA` |
-| AP20 | `GetItem` | `OPERATOR#<id>` | `SHIFT#ACTIVE` |
+| AP01 | `TransactWrite` (3 ítems) | `ORGANIZATION#` + `USER#` | Crear org + CUSTOMER + link |
+| AP02 | `GetItem` | `ORGANIZATION#<id>` | `#METADATA` |
+| AP03 | `Scan` (ADMIN only) | — | `begins_with(PK, "ORGANIZATION#") AND SK = "#METADATA"` |
+| AP04 | `Query` | `ORGANIZATION#<id>` | `begins_with(SK, "USER#")` |
+| AP05 | `Query GSI1` | `COGNITO#<sub>` | — |
+| AP06 | `Query GSI2` | `EMAIL#<email>` | — |
+| AP07 | `GetItem` | `USER#<id>` | `#METADATA` |
+| AP08 | `Query` | `ORGANIZATION#<id>` | `begins_with(SK, "OPERATOR#")` |
+| AP09 | `GetItem` | `USER#<id>` | `SESSION#ACTIVE` |
+| AP10 | `PutItem / DeleteItem` | `USER#<id>` | `SESSION#ACTIVE` |
+| AP11 | `Query` | `ORGANIZATION#<id>` | `begins_with(SK, "LOCATION#")` |
+| AP12 | `GetItem` | `LOCATION#<id>` | `#METADATA` |
+| AP13 | `Query GSI1` | `SERIAL#<serial>` | — |
+| AP14 | `Query` | `LOCATION#<id>` | `begins_with(SK, "TERMINAL#")` |
+| AP15 | `UpdateItem` | `TERMINAL#<id>` | `#METADATA` |
+| AP16 | `GetItem` | `LOCATION#<id>` | `TARIFF#<vehicle_type>` |
+| AP17 | `Query` | `LOCATION#<id>` | `begins_with(SK, "TARIFF#")` |
+| AP18 | `GetItem` | `VEHICLE#<plate>` | `#METADATA` |
+| AP19 | `Query` | `LOCATION#<id>` | `begins_with(SK, "PARKING#ACTIVE#")` |
+| AP20 | `Query GSI1` | `PLATE#<plate>` | `GSI1SK = "ACTIVE"` |
 | AP21 | `TransactWrite` | múltiples | Ver detalle AP21 abajo |
-| AP22 | `Query` | `OPERATOR#<id>` | `begins_with(SK, "SHIFT#")` — filtra `SHIFT#ACTIVE` en código |
-| AP23 | `Query` | `SHIFT#<id>` | `begins_with(SK, "PARKING#")` |
-| AP24 | `Query` | `SHIFT#<id>` | `begins_with(SK, "TRANSACTION#")` |
-| AP25 | `Query` | `LOCATION#<id>` | `between(SK, "PARKING#<date_ini>", "PARKING#<date_fin>")` |
-| AP26 | `Query` por shift (N+1) | `SHIFT#<id>` (×N) | `begins_with(SK, "TRANSACTION#")` |
-| AP27 | `Query` | `AUDIT#<entity>#<entity_id>` | range en SK por fechas |
-| AP28 | `Query GSI2` | `AUDIT_USER#<user_id>` | range en GSI2SK por fechas |
+| AP22 | `TransactWrite` | múltiples | Ver detalle AP22 abajo |
+| AP23 | `GetItem` | `PARKING#<id>` | `#METADATA` |
+| AP24 | `GetItem` | `OPERATOR#<id>` | `SHIFT#ACTIVE` |
+| AP25 | `TransactWrite` | múltiples | Ver detalle AP25 abajo |
+| AP26 | `Query` | `OPERATOR#<id>` | `begins_with(SK, "SHIFT#")` — filtra `SHIFT#ACTIVE` en código |
+| AP27 | `Query` | `SHIFT#<id>` | `begins_with(SK, "PARKING#")` |
+| AP28 | `Query` | `SHIFT#<id>` | `begins_with(SK, "TRANSACTION#")` |
+| AP29 | `Query` | `LOCATION#<id>` | `between(SK, "PARKING#<date_ini>", "PARKING#<date_fin>")` |
+| AP30 | `Query` por shift (N+1) | `SHIFT#<id>` (×N) | `begins_with(SK, "TRANSACTION#")` |
+| AP31 | `Query` | `AUDIT#<entity>#<entity_id>` | range en SK por fechas |
+| AP32 | `Query GSI2` | `AUDIT_USER#<user_id>` | range en GSI2SK por fechas |
 
 ### Detalle de TransactWrite por operación
 
-**AP17 — Ingreso de vehículo (hasta 4 ítems):**
+**AP01 — Crear organización + usuario CUSTOMER (3 ítems):**
+```
+1. Put  ORGANIZATION#<org_id>/#METADATA          (ítem principal org)
+2. Put  USER#<user_id>/#METADATA                 (usuario CUSTOMER con org_id = org_id)
+3. Put  ORGANIZATION#<org_id>/USER#<user_id>     (link org → admin — para AP04)
+```
+
+**AP21 — Ingreso de vehículo (hasta 4 ítems):**
 ```
 1. Put  PARKING#<id> / #METADATA              (ítem principal ParkingSession)
 2. Put  LOCATION#<id> / PARKING#ACTIVE#<id>   (ítem activo con GSI1PK=PLATE#...)
@@ -459,7 +509,7 @@ GSI2PK = "AUDIT_USER#<user_id>"    GSI2SK = "<occurred_at>"    → AP28
 
 > ⚠️ No se puede hacer `Put` con condition y `Update` en el mismo TransactWrite sobre el mismo ítem. La estrategia recomendada: siempre usar `UpdateItem` con `SET last_seen_at = :now, total_sessions = if_not_exists(total_sessions, :zero) + :one, vehicle_type = if_not_exists(vehicle_type, :type)`.
 
-**AP18 — Salida + cobro (4 ítems):**
+**AP22 — Salida + cobro (4 ítems):**
 ```
 1. Delete  LOCATION#<id> / PARKING#ACTIVE#<id>              (elimina ítem activo → saca del GSI1)
 2. Put     LOCATION#<id> / PARKING#<YYYY-MM-DD>#<id>        (ítem histórico sin GSI1PK)
@@ -471,7 +521,7 @@ GSI2PK = "AUDIT_USER#<user_id>"    GSI2SK = "<occurred_at>"    → AP28
 
 > AP18 puede requerir hasta 6 operaciones. Está dentro del límite de 100. El tamaño total raramente supera los 4 MB.
 
-**AP21 — Abrir / cerrar turno (2-3 ítems):**
+**AP25 — Abrir / cerrar turno (2-3 ítems):**
 ```
 Apertura:
 1. Put  OPERATOR#<id> / SHIFT#ACTIVE            (turno activo)
@@ -487,7 +537,33 @@ Cierre:
 
 ## Ejemplos de ítems
 
-### Usuario (Customer Operator)
+### Organization
+
+```json
+{
+  "PK":           "ORGANIZATION#c0c0c0c0-...",
+  "SK":           "#METADATA",
+  "id":           "c0c0c0c0-...",
+  "org_name":     "Estacionamiento Central SpA",
+  "rut_empresa":  "76543210-K",
+  "org_email":    "contacto@estacionamiento.cl",
+  "phone_number": "+56222345678",
+  "org_status":   "ACTIVE",
+  "admin_user_id":"a1b2c3d4-...",
+  "created_at":   "2026-06-14T10:00:00Z"
+}
+```
+
+### Link organización → admin
+
+```json
+{
+  "PK": "ORGANIZATION#c0c0c0c0-...",
+  "SK": "USER#a1b2c3d4-..."
+}
+```
+
+### Usuario CUSTOMER (admin de organización)
 
 ```json
 {
@@ -495,22 +571,44 @@ Cierre:
   "SK":          "#METADATA",
   "id":          "a1b2c3d4-...",
   "cognito_sub": "us-east-1_abc|xyz",
-  "email":       "juan.perez@estacionamiento.cl",
-  "full_name":   "Juan Pérez",
-  "role":        "CUSTOMER_OPERATOR",
-  "status":      "ACTIVE",
-  "customer_id": "c0c0c0c0-...",
-  "location_id": "l1l1l1l1-...",
+  "email_addr":  "admin@estacionamiento.cl",
+  "given_name":  "Carlos",
+  "family_name": "González",
+  "role":        "CUSTOMER",
+  "user_status": "ACTIVE",
+  "org_id":      "c0c0c0c0-...",
   "created_at":  "2026-06-14T10:00:00Z",
-  "updated_at":  "2026-06-14T10:00:00Z",
   "GSI1PK":      "COGNITO#us-east-1_abc|xyz",
   "GSI1SK":      "USER#a1b2c3d4-...",
-  "GSI2PK":      "EMAIL#juan.perez@estacionamiento.cl",
+  "GSI2PK":      "EMAIL#admin@estacionamiento.cl",
   "GSI2SK":      "USER#a1b2c3d4-..."
 }
 ```
 
-> El ítem aparece en GSI1 (via COGNITO) y en GSI2 (via EMAIL) simultáneamente.
+### Usuario CUSTOMER_OPERATOR (cajero)
+
+```json
+{
+  "PK":          "USER#b2b2b2b2-...",
+  "SK":          "#METADATA",
+  "id":          "b2b2b2b2-...",
+  "cognito_sub": "us-east-1_def|uvw",
+  "email_addr":  "juan.perez@estacionamiento.cl",
+  "given_name":  "Juan",
+  "family_name": "Pérez",
+  "role":        "CUSTOMER_OPERATOR",
+  "user_status": "ACTIVE",
+  "org_id":      "c0c0c0c0-...",
+  "location_id": "l1l1l1l1-...",
+  "created_at":  "2026-06-14T10:00:00Z",
+  "GSI1PK":      "COGNITO#us-east-1_def|uvw",
+  "GSI1SK":      "USER#b2b2b2b2-...",
+  "GSI2PK":      "EMAIL#juan.perez@estacionamiento.cl",
+  "GSI2SK":      "USER#b2b2b2b2-..."
+}
+```
+
+> Ambos usuarios aparecen en GSI1 (via COGNITO) y en GSI2 (via EMAIL) simultáneamente.
 
 ### Sesión activa de usuario (enforcement sesión única)
 

@@ -19,9 +19,15 @@ type RegisterRequest struct {
 	GivenName   string `json:"given_name"`
 	FamilyName  string `json:"family_name"`
 	PhoneNumber string `json:"phone_number,omitempty"`
-	Role        string `json:"role,omitempty"`        // ADMIN | CUSTOMER | CUSTOMER_OPERATOR (default)
-	CustomerID  string `json:"customer_id,omitempty"`
-	LocationID  string `json:"location_id,omitempty"`
+	Role        string `json:"role,omitempty"` // ADMIN | CUSTOMER | CUSTOMER_OPERATOR (default)
+
+	// Campos para operadores asignados a una organización existente
+	OrgID      string `json:"org_id,omitempty"`
+	LocationID string `json:"location_id,omitempty"`
+
+	// Campos requeridos al crear una nueva organización (role == CUSTOMER)
+	OrgName string `json:"org_name,omitempty"`
+	OrgRut  string `json:"org_rut,omitempty"`
 }
 
 func (h *Handler) HandleRegister(ctx context.Context, event events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
@@ -44,6 +50,10 @@ func (h *Handler) HandleRegister(ctx context.Context, event events.APIGatewayV2H
 		role = "CUSTOMER_OPERATOR"
 	}
 
+	if role == "CUSTOMER" && req.OrgName == "" {
+		return jsonResponse(400, map[string]string{"error": "org_name_requerido"}), nil
+	}
+
 	sub, err := h.createCognitoUser(ctx, normalized, req.Password, req.Email, req.GivenName, req.FamilyName, req.PhoneNumber)
 	if err != nil {
 		var exists *cognitotypes.UsernameExistsException
@@ -53,14 +63,14 @@ func (h *Handler) HandleRegister(ctx context.Context, event events.APIGatewayV2H
 		return jsonResponse(500, map[string]string{"error": "error_al_crear_usuario"}), nil
 	}
 
-	// Asignar grupo Cognito (best-effort: no falla el registro si esto falla)
+	// Asignar grupo Cognito (best-effort)
 	_, _ = h.cognito.AdminAddUserToGroup(ctx, &cognitoidentityprovider.AdminAddUserToGroupInput{
 		UserPoolId: aws.String(h.userPoolID),
 		Username:   aws.String(normalized),
 		GroupName:  aws.String(role),
 	})
 
-	userID, err := h.writeUserRecord(ctx, sub, normalized, req, role)
+	result, err := h.writeUserRecord(ctx, sub, normalized, req, role)
 	if err != nil {
 		// rollback: eliminar usuario Cognito para no dejar huérfano
 		_, _ = h.cognito.AdminDeleteUser(ctx, &cognitoidentityprovider.AdminDeleteUserInput{
@@ -70,7 +80,14 @@ func (h *Handler) HandleRegister(ctx context.Context, event events.APIGatewayV2H
 		return jsonResponse(500, map[string]string{"error": "error_al_crear_usuario"}), nil
 	}
 
-	return jsonResponse(201, map[string]string{"message": "usuario_creado", "id": userID}), nil
+	resp := map[string]string{
+		"message": "usuario_creado",
+		"id":      result.UserID,
+	}
+	if result.OrgID != "" {
+		resp["org_id"] = result.OrgID
+	}
+	return jsonResponse(201, resp), nil
 }
 
 // createCognitoUser crea el usuario en Cognito y retorna su cognito_sub.
