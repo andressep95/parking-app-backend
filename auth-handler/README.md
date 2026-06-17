@@ -1,34 +1,24 @@
 # auth-handler
 
-Lambda en Go que maneja autenticación y registro de usuarios.  
+Lambda Go para autenticación, registro y gestión de sesiones del sistema de parking.  
 Corre en `provided.al2023` / `arm64`. El binario se llama `bootstrap`.
 
 ---
 
-## Arquitectura del componente
+## Arquitectura
 
-```mermaid
-graph LR
-    subgraph Cliente
-        WEB([Web / App])
-        ANDROID([Terminal Android])
-    end
-
-    subgraph AWS
-        APIGW[API Gateway\nHTTP v2]
-        L["⚡ auth-handler\n(Lambda Go arm64)"]
-        COG[(Cognito\nUser Pool)]
-        DDB[(DynamoDB\nSingle Table)]
-    end
-
-    WEB -->|POST /login\nPOST /register| APIGW
-    ANDROID -->|POST /login\n+ serial_number| APIGW
-    APIGW -->|APIGatewayV2HTTPRequest| L
-    L -->|InitiateAuth\nAdminCreateUser\nAdminAddUserToGroup| COG
-    L -->|TransactWriteItems\nQuery GSI1| DDB
-    COG -->|tokens / errores| L
-    DDB -->|terminal data| L
-    L -->|JSON response| APIGW
+```
+Cliente (Web / Terminal Android)
+        │
+        ▼
+API Gateway HTTP v2
+  ├── Público: /login, /register, /register/batch
+  └── JWT auth: /logout, /sessions/{user_id}
+        │
+        ▼
+auth-handler (Lambda Go arm64)
+  ├── Cognito (AdminCreateUser, InitiateAuth, GlobalSignOut, …)
+  └── DynamoDB (USER#, ORGANIZATION#, SESSION#ACTIVE, GSI1/GSI2)
 ```
 
 ---
@@ -37,30 +27,28 @@ graph LR
 
 | Variable | Descripción |
 |---|---|
-| `COGNITO_USER_POOL_ID` | ID del User Pool (inyectado por Terraform) |
-| `COGNITO_CLIENT_ID` | ID del App Client (inyectado por Terraform) |
-| `DYNAMODB_TABLE_NAME` | Nombre de la tabla DynamoDB principal (inyectado por Terraform) |
-| `AWS_REGION` | Región AWS (disponible automáticamente en Lambda) |
+| `COGNITO_USER_POOL_ID` | ID del User Pool |
+| `COGNITO_CLIENT_ID` | ID del App Client |
+| `DYNAMODB_TABLE_NAME` | Nombre de la tabla DynamoDB principal |
 
 ---
 
 ## Endpoints
 
-| Método | Ruta | Auth | Content-Type |
-|---|---|---|---|
-| `POST` | `/api/v1/auth/login` | Público | `application/json` |
-| `POST` | `/api/v1/auth/register` | Público | `application/json` |
-| `POST` | `/api/v1/auth/register/batch` | Público | `multipart/form-data` |
-
-El router se resuelve con `event.RouteKey` del evento `APIGatewayV2HTTPRequest`.
+| Método | Ruta | Auth | Descripción |
+|--------|------|------|-------------|
+| `POST` | `/api/v1/auth/login` | Público | Autenticación con RUT + contraseña |
+| `POST` | `/api/v1/auth/register` | Público | Registrar un usuario (y organización si CUSTOMER) |
+| `POST` | `/api/v1/auth/register/batch` | Público | Registro masivo desde Excel |
+| `POST` | `/api/v1/auth/logout` | JWT | Cerrar sesión propia |
+| `DELETE` | `/api/v1/auth/sessions/{user_id}` | JWT (ADMIN) | Cierre remoto de sesión de cualquier usuario |
 
 ---
 
 ## Structs Go
 
 ```go
-// ── Login ──────────────────────────────────────────────────────────────────
-
+// ── Login ─────────────────────────────────────────────────────────────────────
 type LoginRequest struct {
     RUT          string `json:"rut"`
     Password     string `json:"password"`
@@ -74,8 +62,7 @@ type LoginResponse struct {
     ExpiresIn    int32  `json:"expires_in"`
 }
 
-// ── Registro simple ────────────────────────────────────────────────────────
-
+// ── Registro ───────────────────────────────────────────────────────────────────
 type RegisterRequest struct {
     RUT         string `json:"rut"`
     Password    string `json:"password"`
@@ -84,12 +71,13 @@ type RegisterRequest struct {
     FamilyName  string `json:"family_name"`
     PhoneNumber string `json:"phone_number,omitempty"`
     Role        string `json:"role,omitempty"`        // default: CUSTOMER_OPERATOR
-    CustomerID  string `json:"customer_id,omitempty"`
+    OrgID       string `json:"org_id,omitempty"`      // para CUSTOMER_OPERATOR
     LocationID  string `json:"location_id,omitempty"`
+    OrgName     string `json:"org_name,omitempty"`    // requerido si role == CUSTOMER
+    OrgRut      string `json:"org_rut,omitempty"`
 }
 
-// ── DynamoDB ───────────────────────────────────────────────────────────────
-
+// ── DynamoDB — User ────────────────────────────────────────────────────────────
 type UserItem struct {
     PK         string `dynamodbav:"PK"`          // USER#<id>
     SK         string `dynamodbav:"SK"`          // #METADATA
@@ -105,26 +93,24 @@ type UserItem struct {
     Phone      string `dynamodbav:"phone_number,omitempty"`
     Role       string `dynamodbav:"role"`
     Status     string `dynamodbav:"user_status"` // 'status' es reservada en DynamoDB
-    CustomerID string `dynamodbav:"customer_id,omitempty"`
+    OrgID      string `dynamodbav:"org_id,omitempty"`
     LocationID string `dynamodbav:"location_id,omitempty"`
     CognitoSub string `dynamodbav:"cognito_sub"`
     CreatedAt  string `dynamodbav:"created_at"`
 }
 
-// ── Registro batch ─────────────────────────────────────────────────────────
-// El body es multipart/form-data con un campo "file" que contiene el Excel.
-
-type BatchRegisterResponse struct {
-    Total   int          `json:"total"`
-    Created int          `json:"created"`
-    Failed  int          `json:"failed"`
-    Errors  []BatchError `json:"errors,omitempty"`
-}
-
-type BatchError struct {
-    Row   int    `json:"row"`
-    RUT   string `json:"rut"`
-    Error string `json:"error"`
+// ── DynamoDB — Org ─────────────────────────────────────────────────────────────
+type OrgItem struct {
+    PK          string `dynamodbav:"PK"`           // ORGANIZATION#<id>
+    SK          string `dynamodbav:"SK"`           // #METADATA
+    ID          string `dynamodbav:"id"`
+    OrgName     string `dynamodbav:"org_name"`     // 'name' es reservada en DynamoDB
+    RutEmpresa  string `dynamodbav:"rut_empresa,omitempty"`
+    Email       string `dynamodbav:"org_email,omitempty"`
+    Phone       string `dynamodbav:"phone_number,omitempty"`
+    Status      string `dynamodbav:"org_status"`   // 'status' es reservada en DynamoDB
+    AdminUserID string `dynamodbav:"admin_user_id"`
+    CreatedAt   string `dynamodbav:"created_at"`
 }
 ```
 
@@ -132,232 +118,103 @@ type BatchError struct {
 
 ## Flujo 1 — Login
 
-El flujo difiere según el grupo Cognito del usuario:
-
-| Grupo | ¿Necesita `serial_number`? | Validación extra |
+| Grupo | `serial_number` | Validación extra |
 |---|---|---|
 | `ADMIN` | No | — |
 | `CUSTOMER` | No | — |
-| `CUSTOMER_OPERATOR` | **Sí** | Terminal debe existir en DynamoDB y no estar `INACTIVE` |
+| `CUSTOMER_OPERATOR` | **Sí** | Terminal debe existir en DynamoDB (GSI1) y no ser `INACTIVE` |
 
-### Diagrama de secuencia
-
-```mermaid
-sequenceDiagram
-    actor U as Usuario
-    participant FE as Cliente
-    participant GW as API Gateway
-    participant L as auth-handler
-    participant C as Cognito
-    participant D as DynamoDB
-
-    U->>FE: Ingresa RUT + Password (+ serial si es operador)
-    FE->>GW: POST /api/v1/auth/login
-    GW->>L: APIGatewayV2HTTPRequest
-
-    L->>L: Parsear body, NormalizeRUT, ValidateRUT
-
-    L->>C: InitiateAuth (USER_PASSWORD_AUTH)
-
-    alt Credenciales inválidas
-        C-->>L: UserNotFoundException / NotAuthorizedException
-        L-->>FE: 404 / 401
-    else Autenticación exitosa
-        C-->>L: AuthenticationResult { AccessToken, IDToken, RefreshToken }
-        L->>L: Decodificar JWT payload (base64)\nleer cognito:groups
-
-        alt Es CUSTOMER_OPERATOR
-            alt serial_number vacío
-                L-->>FE: 400 { error: "serial_number_requerido" }
-            else serial_number presente
-                L->>D: Query GSI1\nGSI1PK = "SERIAL#<serial>"
-                alt Terminal no encontrado
-                    D-->>L: 0 items
-                    L-->>FE: 403 { error: "terminal_no_registrado" }
-                else Terminal INACTIVE
-                    D-->>L: item con status=INACTIVE
-                    L-->>FE: 403 { error: "terminal_inactivo" }
-                else Terminal OK
-                    L-->>FE: 200 { access_token, id_token, refresh_token, expires_in }
-                end
-            end
-        else Es ADMIN o CUSTOMER
-            L-->>FE: 200 { access_token, id_token, refresh_token, expires_in }
-        end
-    end
+```
+POST /api/v1/auth/login
+        │
+        ├─ NormalizeRUT + ValidateRUT
+        ├─ Cognito InitiateAuth
+        │     └─ Error → 401 / 404
+        ├─ jwtClaims(accessToken) → sub + groups
+        ├─ [si CUSTOMER_OPERATOR] Query GSI1 SERIAL#<serial> → validar terminal
+        ├─ userIDBySub(sub) via GSI1 COGNITO#<sub>
+        ├─ writeSessionActive(userID, TTL=24h)   ← best-effort, no bloquea login
+        └─ 200 { access_token, id_token, refresh_token, expires_in }
 ```
 
 ---
 
-## Flujo 2 — Registro simple (1 usuario)
+## Flujo 2 — Registro simple
 
-### Diagrama de secuencia
-
-```mermaid
-sequenceDiagram
-    actor A as Admin
-    participant FE as Cliente
-    participant GW as API Gateway
-    participant L as auth-handler
-    participant C as Cognito
-    participant D as DynamoDB
-
-    A->>FE: Completa formulario de registro
-    FE->>GW: POST /api/v1/auth/register
-    GW->>L: APIGatewayV2HTTPRequest
-
-    L->>L: Parsear body, NormalizeRUT, ValidateRUT
-
-    L->>C: AdminCreateUser (MessageAction: SUPPRESS)
-    alt UsernameExistsException
-        C-->>L: Error
-        L-->>FE: 409 { error: "usuario_ya_existe" }
-    else OK
-        C-->>L: User { Attributes: [sub, ...] }
-        L->>C: AdminSetUserPassword (Permanent: true)
-        L->>C: AdminAddUserToGroup (role)
-        L->>D: TransactWriteItems\n1. Put USER#<id>/#METADATA\n2. Put CUSTOMER#<cid>/OPERATOR#<id> (si aplica)
-        alt DynamoDB falla
-            D-->>L: Error
-            L->>C: AdminDeleteUser (rollback)
-            L-->>FE: 500 { error: "error_al_crear_usuario" }
-        else DynamoDB OK
-            L-->>FE: 201 { message: "usuario_creado", id: "<uuid>" }
-        end
-    end
+```
+POST /api/v1/auth/register
+        │
+        ├─ NormalizeRUT + ValidateRUT
+        ├─ [role == CUSTOMER] validar org_name presente
+        ├─ AdminCreateUser + AdminSetUserPassword + AdminAddUserToGroup
+        │
+        ├─ [role == CUSTOMER]
+        │     TransactWrite (3 ítems):
+        │       Put ORGANIZATION#<org_id>/#METADATA
+        │       Put USER#<user_id>/#METADATA  (con org_id = org_id)
+        │       Put ORGANIZATION#<org_id>/USER#<user_id>
+        │     → 201 { id, org_id }
+        │
+        ├─ [role == CUSTOMER_OPERATOR con org_id]
+        │     TransactWrite (2 ítems):
+        │       Put USER#<user_id>/#METADATA
+        │       Put ORGANIZATION#<org_id>/OPERATOR#<user_id>
+        │     → 201 { id }
+        │
+        └─ [DynamoDB falla] → AdminDeleteUser (rollback) → 500
 ```
 
 ---
 
-## Flujo 3 — Registro batch (Excel → Lambda)
+## Flujo 3 — Registro batch (Excel)
 
-El archivo llega directamente a la Lambda como `multipart/form-data`.  
-API Gateway HTTP v2 entrega el body en **base64** (`event.IsBase64Encoded = true`).  
-La Lambda procesa en **chunks de 25** para respetar el rate limit de Cognito.
+El archivo llega como `multipart/form-data`, campo `file`.  
+API Gateway HTTP v2 lo entrega en base64 (`IsBase64Encoded = true`).  
+Todos los usuarios del batch reciben rol `CUSTOMER_OPERATOR`.
 
-### Planilla Excel esperada
-
-La Lambda lee la primera hoja. **Fila 1 = header, se ignora. Datos desde fila 2.**
+**Planilla esperada** (fila 1 = header, datos desde fila 2):
 
 | A | B | C | D | E | F |
 |---|---|---|---|---|---|
 | rut | nombre | apellido | email | password | telefono |
-| 12345678-5 | Juan | Pérez | juan@mail.com | Pass123! | +56912345678 |
-| 87654321-K | María | López | maria@mail.com | Pass456! | *(vacío)* |
 
-> Todos los usuarios creados por batch reciben el rol `CUSTOMER_OPERATOR` por defecto.
-
-### Diagrama de secuencia
-
-```mermaid
-sequenceDiagram
-    actor A as Admin
-    participant FE as Frontend
-    participant GW as API Gateway
-    participant L as auth-handler
-    participant C as Cognito
-    participant D as DynamoDB
-
-    A->>FE: Sube archivo Excel (.xlsx)
-    FE->>GW: POST /api/v1/auth/register/batch\nContent-Type: multipart/form-data
-    GW->>L: event.Body (base64)
-
-    L->>L: Decodificar base64\nParsear multipart → extraer "file"\nexcelize.OpenReader → leer Sheet1
-
-    loop chunks de 25 usuarios
-        loop usuario en chunk
-            L->>L: NormalizeRUT + ValidateRUT
-            alt RUT inválido
-                L->>L: failed++ · errors.append
-            else RUT válido
-                L->>C: AdminCreateUser + AdminSetUserPassword
-                alt Error Cognito
-                    L->>L: failed++ · errors.append
-                else OK
-                    L->>D: TransactWriteItems (USER#<id>/#METADATA)
-                    alt Error DynamoDB
-                        L->>L: failed++ · errors.append "error_dynamo"
-                    else OK
-                        L->>L: created++
-                    end
-                end
-            end
-        end
-    end
-
-    L-->>FE: 200 { total, created, failed, errors }
-```
+Procesamiento en chunks de 25 → respeta rate limit de Cognito (~50 req/s).  
+Errores parciales: si una fila falla, el resto continúa.
 
 ---
 
-## Consideraciones de escala para batch
+## Flujo 4 — Logout propio
 
-| Escenario | Recomendación |
-|---|---|
-| < 500 usuarios | Lambda directa, chunks de 25, timeout 30s es suficiente |
-| 500 – 2000 usuarios | Aumentar timeout a 5 min en Terraform (`timeout = 300`) |
-| > 2000 usuarios | Subir Excel a S3 → S3 Event → Lambda asíncrona (siguiente fase) |
+```
+POST /api/v1/auth/logout  [JWT requerido]
+        │
+        ├─ sub = JWT.Claims["sub"]
+        ├─ userIDBySub(sub) via GSI1
+        ├─ GlobalSignOut(accessToken del header Authorization)
+        │     → invalida refresh_token en Cognito
+        ├─ deleteSessionActive(userID)
+        └─ 200 { message: "sesion_cerrada" }
+```
+
+> El `access_token` sigue siendo válido hasta su expiración natural (~1h).
 
 ---
 
-## cURL de prueba
+## Flujo 5 — Cierre remoto de sesión (ADMIN)
 
-Base URL: `https://qnehzrs7g4.execute-api.us-east-1.amazonaws.com`
-
-### Login — usuario web (ADMIN / CUSTOMER)
-
-```bash
-curl -s -X POST https://qnehzrs7g4.execute-api.us-east-1.amazonaws.com/api/v1/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"rut":"12345678-5","password":"Temporal123!"}' | jq
+```
+DELETE /api/v1/auth/sessions/{user_id}  [JWT requerido, solo ADMIN]
+        │
+        ├─ Verificar cognito:groups contiene "ADMIN"
+        ├─ userRUTByID(user_id) → GetItem USER#<id>/#METADATA → rut
+        ├─ AdminUserGlobalSignOut(userPoolId, username=rut)
+        │     → invalida todos los refresh_tokens del usuario
+        ├─ deleteSessionActive(user_id)
+        └─ 200 { message: "sesion_cerrada" }
 ```
 
-### Login — operador en terminal
-
-```bash
-curl -s -X POST https://qnehzrs7g4.execute-api.us-east-1.amazonaws.com/api/v1/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"rut":"12345678-5","password":"Temporal123!","serial_number":"TUU-2024-001"}' | jq
-```
-
-Errores posibles login:
-
-| Status | `error` | Causa |
-|--------|---------|-------|
-| 400 | `rut_invalido` | RUT no pasa módulo 11 |
-| 400 | `serial_number_requerido` | Operador sin serial |
-| 401 | `credenciales_invalidas` | Contraseña incorrecta |
-| 403 | `terminal_no_registrado` | Serial no existe en DynamoDB |
-| 403 | `terminal_inactivo` | Terminal con status INACTIVE |
-| 404 | `usuario_no_encontrado` | RUT no existe en Cognito |
-
-### Register — operador con rol
-
-```bash
-curl -s -X POST https://qnehzrs7g4.execute-api.us-east-1.amazonaws.com/api/v1/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{
-    "rut": "12345678-5",
-    "password": "Temporal123!",
-    "email": "juan.perez@example.com",
-    "given_name": "Juan",
-    "family_name": "Pérez",
-    "role": "CUSTOMER_OPERATOR",
-    "customer_id": "c0c0c0c0-0000-0000-0000-000000000000"
-  }' | jq
-```
-
-Respuesta esperada (`201`):
-```json
-{ "message": "usuario_creado", "id": "a1b2c3d4-..." }
-```
-
-### Register batch — archivo Excel
-
-```bash
-curl -s -X POST https://qnehzrs7g4.execute-api.us-east-1.amazonaws.com/api/v1/auth/register/batch \
-  -F "file=@/ruta/al/archivo.xlsx" | jq
-```
+Casos de uso: cliente solicita bloqueo de acceso, operador pierde el terminal,
+revocación de emergencia por parte del ADMIN de Haulmer.
 
 ---
 
@@ -366,15 +223,15 @@ curl -s -X POST https://qnehzrs7g4.execute-api.us-east-1.amazonaws.com/api/v1/au
 ```
 auth-handler/
 ├── README.md
-├── go.mod
-├── go.sum
+├── go.mod / go.sum
 ├── docs/
 │   └── openapi.yaml
-├── main.go              ← entry point, inicializa clientes Cognito y DynamoDB
+├── main.go              ← entry point, inicializa Cognito + DynamoDB
 ├── handler.go           ← Handler struct, router por event.RouteKey, jsonResponse
-├── login.go             ← HandleLogin, tokenHasGroup, validateTerminal
+├── login.go             ← HandleLogin, jwtClaims, validateTerminal
+├── session.go           ← HandleLogout, HandleAdminCloseSession
 ├── register.go          ← HandleRegister, createCognitoUser
-├── dynamo.go            ← UserItem struct, writeUserRecord (TransactWrite)
+├── dynamo.go            ← UserItem, OrgItem, writeUserRecord, helpers de sesión
 ├── register_batch.go    ← HandleBatch: parsea Excel, chunking
 └── rut/
     ├── normalize.go
@@ -383,10 +240,68 @@ auth-handler/
 
 ---
 
-## RUTs válidos para test rápido
+## cURL de prueba
 
-| RUT | Dígito verificador |
-|-----|--------------------|
+```bash
+BASE="https://qnehzrs7g4.execute-api.us-east-1.amazonaws.com"
+TOKEN="Bearer <access_token>"
+
+# Login — ADMIN / CUSTOMER (web)
+curl -s -X POST $BASE/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"rut":"12345678-5","password":"MiPass123!"}' | jq
+
+# Login — CUSTOMER_OPERATOR (terminal)
+curl -s -X POST $BASE/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"rut":"87654321-K","password":"OtraPass456!","serial_number":"TUU-2024-001"}' | jq
+
+# Registrar CUSTOMER + organización (ADMIN llama este endpoint)
+curl -s -X POST $BASE/api/v1/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{
+    "rut": "87654321-K",
+    "password": "OtraPass456!",
+    "email": "admin@empresa.cl",
+    "given_name": "María",
+    "family_name": "López",
+    "role": "CUSTOMER",
+    "org_name": "Estacionamiento Central SpA",
+    "org_rut": "76.543.210-K"
+  }' | jq
+
+# Registrar operador en una org existente
+curl -s -X POST $BASE/api/v1/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{
+    "rut": "12345678-5",
+    "password": "MiPass123!",
+    "email": "juan.perez@empresa.cl",
+    "given_name": "Juan",
+    "family_name": "Pérez",
+    "role": "CUSTOMER_OPERATOR",
+    "org_id": "c0c0c0c0-0000-0000-0000-000000000000"
+  }' | jq
+
+# Batch
+curl -s -X POST $BASE/api/v1/auth/register/batch \
+  -F "file=@/ruta/al/archivo.xlsx" | jq
+
+# Logout propio
+curl -s -X POST $BASE/api/v1/auth/logout \
+  -H "Authorization: $TOKEN" | jq
+
+# Cierre remoto de sesión (ADMIN)
+curl -s -X DELETE $BASE/api/v1/auth/sessions/<user_id> \
+  -H "Authorization: $TOKEN" | jq
+```
+
+---
+
+## RUTs válidos para tests rápidos
+
+| RUT | DV |
+|-----|----|
 | `12345678-5` | 5 |
 | `11111111-1` | 1 |
 | `98765432-1` | 1 |
