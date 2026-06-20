@@ -12,3 +12,12 @@ organization-handler/organization-handler
 
 # macOS
 .DS_Store
+
+# Maven build output
+target/
+
+# Local environment — credenciales y configuración sensible
+.env
+.env.*
+!.env.example
+
