@@ -6,6 +6,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### [799ad71] — 2026-06-20
+
+**feat(user,organization): implement full CRUD for users and organizations**
+
+> what: Adds UserService, UserController, OrganizationService,
+> OrganizationController with complete CRUD, RBAC enforcement,
+> Cognito sync, and org-status check in the device login flow.
+> why:  Implements US-005 and US-006: user/org management lifecycle
+
+#### Added
+
+- `src/main/java/com/cloudcentinel/parkingapp/organization/CreateOrganizationRequest.java`
+- `src/main/java/com/cloudcentinel/parkingapp/organization/Organization.java`
+- `src/main/java/com/cloudcentinel/parkingapp/organization/OrganizationController.java`
+- `src/main/java/com/cloudcentinel/parkingapp/organization/OrganizationRepository.java`
+- `src/main/java/com/cloudcentinel/parkingapp/organization/OrganizationService.java`
+- `src/main/java/com/cloudcentinel/parkingapp/organization/UpdateOrganizationRequest.java`
+- `src/main/java/com/cloudcentinel/parkingapp/user/CreateUserRequest.java`
+- `src/main/java/com/cloudcentinel/parkingapp/user/ResetPasswordRequest.java`
+- `src/main/java/com/cloudcentinel/parkingapp/user/UpdateUserRequest.java`
+- `src/main/java/com/cloudcentinel/parkingapp/user/UserController.java`
+- `src/main/java/com/cloudcentinel/parkingapp/user/UserResponse.java`
+- `src/main/java/com/cloudcentinel/parkingapp/user/UserService.java`
+
+#### Changed
+
+- `.agents/memory/token-usage.jsonl`
+- `src/main/java/com/cloudcentinel/parkingapp/auth/AuthService.java`
+- `src/main/java/com/cloudcentinel/parkingapp/shared/cognito/CognitoAdminClient.java`
+- `src/main/java/com/cloudcentinel/parkingapp/user/UserRepository.java`
+
+---
+
 ### [ad9d558] — 2026-06-20
 
 **feat(project): migrate from Go Lambdas to Spring Boot 4.1**
