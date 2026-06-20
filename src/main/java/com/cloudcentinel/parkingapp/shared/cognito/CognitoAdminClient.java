@@ -7,6 +7,8 @@ import software.amazon.awssdk.services.cognitoidentityprovider.model.AdminAddUse
 import software.amazon.awssdk.services.cognitoidentityprovider.model.AdminCreateUserRequest;
 import software.amazon.awssdk.services.cognitoidentityprovider.model.AdminCreateUserResponse;
 import software.amazon.awssdk.services.cognitoidentityprovider.model.AdminDeleteUserRequest;
+import software.amazon.awssdk.services.cognitoidentityprovider.model.AdminDisableUserRequest;
+import software.amazon.awssdk.services.cognitoidentityprovider.model.AdminEnableUserRequest;
 import software.amazon.awssdk.services.cognitoidentityprovider.model.AdminInitiateAuthRequest;
 import software.amazon.awssdk.services.cognitoidentityprovider.model.AdminInitiateAuthResponse;
 import software.amazon.awssdk.services.cognitoidentityprovider.model.AdminSetUserPasswordRequest;
@@ -221,6 +223,35 @@ public class CognitoAdminClient {
         client.globalSignOut(
                 GlobalSignOutRequest.builder()
                         .accessToken(accessToken)
+                        .build()
+        );
+    }
+
+    public void enableUser(String username) {
+        client.adminEnableUser(
+                AdminEnableUserRequest.builder()
+                        .userPoolId(userPoolId)
+                        .username(username)
+                        .build()
+        );
+    }
+
+    public void disableUser(String username) {
+        client.adminDisableUser(
+                AdminDisableUserRequest.builder()
+                        .userPoolId(userPoolId)
+                        .username(username)
+                        .build()
+        );
+    }
+
+    public void setUserPassword(String username, String newPassword) {
+        client.adminSetUserPassword(
+                AdminSetUserPasswordRequest.builder()
+                        .userPoolId(userPoolId)
+                        .username(username)
+                        .password(newPassword)
+                        .permanent(true)
                         .build()
         );
     }

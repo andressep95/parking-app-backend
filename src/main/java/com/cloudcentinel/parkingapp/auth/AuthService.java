@@ -1,5 +1,7 @@
 package com.cloudcentinel.parkingapp.auth;
 
+import com.cloudcentinel.parkingapp.organization.Organization;
+import com.cloudcentinel.parkingapp.organization.OrganizationRepository;
 import com.cloudcentinel.parkingapp.shared.cognito.CognitoAdminClient;
 import com.cloudcentinel.parkingapp.shared.exception.ConflictException;
 import com.cloudcentinel.parkingapp.shared.exception.BadRequestException;
@@ -48,19 +50,22 @@ import java.util.UUID;
 @Service
 public class AuthService {
 
-    private final CognitoAdminClient cognito;
-    private final SessionRepository  sessions;
-    private final UserRepository     users;
-    private final TerminalRepository terminals;
+    private final CognitoAdminClient     cognito;
+    private final SessionRepository      sessions;
+    private final UserRepository         users;
+    private final TerminalRepository     terminals;
+    private final OrganizationRepository organizations;
 
     public AuthService(CognitoAdminClient cognito,
                        SessionRepository sessions,
                        UserRepository users,
-                       TerminalRepository terminals) {
-        this.cognito   = cognito;
-        this.sessions  = sessions;
-        this.users     = users;
-        this.terminals = terminals;
+                       TerminalRepository terminals,
+                       OrganizationRepository organizations) {
+        this.cognito        = cognito;
+        this.sessions       = sessions;
+        this.users          = users;
+        this.terminals      = terminals;
+        this.organizations  = organizations;
     }
 
     /**
@@ -104,6 +109,15 @@ public class AuthService {
 
         if (!"ACTIVE".equals(user.userStatus())) {
             throw new ForbiddenException("usuario_inactivo");
+        }
+
+        // Paso 2b: validar que la organización del operador esté activa
+        if (user.orgId() != null) {
+            Organization org = organizations.findById(user.orgId())
+                    .orElseThrow(() -> new NotFoundException("organizacion_no_encontrada"));
+            if (!"ACTIVE".equals(org.orgStatus())) {
+                throw new ForbiddenException("organizacion_inactiva");
+            }
         }
 
         // Paso 3: este endpoint es exclusivo para OPERATOR

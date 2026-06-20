@@ -5,6 +5,7 @@ import org.springframework.stereotype.Repository;
 
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -104,6 +105,116 @@ public class UserRepository {
                 .param("id", id)
                 .query(UserRepository::mapRow)
                 .optional();
+    }
+
+    public List<User> findAll() {
+        return jdbc.sql("""
+                SELECT id, cognito_sub, rut, email_addr, given_name, family_name,
+                       phone_number, role::text, user_status::text,
+                       org_id, location_id, created_at
+                FROM users ORDER BY created_at DESC LIMIT 50
+                """)
+                .query(UserRepository::mapRow)
+                .list();
+    }
+
+    public List<User> findByOrgId(UUID orgId) {
+        return jdbc.sql("""
+                SELECT id, cognito_sub, rut, email_addr, given_name, family_name,
+                       phone_number, role::text, user_status::text,
+                       org_id, location_id, created_at
+                FROM users WHERE org_id = :orgId
+                ORDER BY created_at DESC LIMIT 50
+                """)
+                .param("orgId", orgId)
+                .query(UserRepository::mapRow)
+                .list();
+    }
+
+    public boolean existsByRut(String rut) {
+        Integer count = jdbc.sql("SELECT COUNT(*) FROM users WHERE rut = :rut")
+                .param("rut", rut)
+                .query(Integer.class)
+                .single();
+        return count > 0;
+    }
+
+    public boolean existsByEmail(String email) {
+        Integer count = jdbc.sql("SELECT COUNT(*) FROM users WHERE email_addr = :email")
+                .param("email", email)
+                .query(Integer.class)
+                .single();
+        return count > 0;
+    }
+
+    public User insert(String cognitoSub, String rut, String email, String givenName,
+                       String familyName, String phoneNumber, String role,
+                       UUID orgId, UUID locationId) {
+        UUID id = UUID.randomUUID();
+        jdbc.sql("""
+                INSERT INTO users (id, cognito_sub, rut, email_addr, given_name, family_name,
+                                   phone_number, role, user_status, org_id, location_id)
+                VALUES (:id, :sub, :rut, :email, :givenName, :familyName, :phone,
+                        :role::user_role, 'ACTIVE', :orgId, :locationId)
+                """)
+                .param("id",         id)
+                .param("sub",        cognitoSub)
+                .param("rut",        rut)
+                .param("email",      email)
+                .param("givenName",  givenName)
+                .param("familyName", familyName)
+                .param("phone",      phoneNumber)
+                .param("role",       role)
+                .param("orgId",      orgId)
+                .param("locationId", locationId)
+                .update();
+        return findById(id).orElseThrow();
+    }
+
+    public void update(UUID id, String email, String givenName, String familyName,
+                       String phoneNumber, UUID locationId) {
+        jdbc.sql("""
+                UPDATE users SET
+                    email_addr   = COALESCE(:email,      email_addr),
+                    given_name   = COALESCE(:givenName,  given_name),
+                    family_name  = COALESCE(:familyName, family_name),
+                    phone_number = COALESCE(:phone,      phone_number),
+                    location_id  = COALESCE(:locationId, location_id)
+                WHERE id = :id
+                """)
+                .param("email",      email)
+                .param("givenName",  givenName)
+                .param("familyName", familyName)
+                .param("phone",      phoneNumber)
+                .param("locationId", locationId)
+                .param("id",         id)
+                .update();
+    }
+
+    public void delete(UUID id) {
+        jdbc.sql("DELETE FROM users WHERE id = :id")
+                .param("id", id)
+                .update();
+    }
+
+    public void setStatus(UUID id, String status) {
+        jdbc.sql("UPDATE users SET user_status = :status::user_status WHERE id = :id")
+                .param("status", status)
+                .param("id",     id)
+                .update();
+    }
+
+    public void setOrgId(UUID userId, UUID orgId) {
+        jdbc.sql("UPDATE users SET org_id = :orgId WHERE id = :id")
+                .param("orgId", orgId)
+                .param("id",    userId)
+                .update();
+    }
+
+    public void clearOrgId(UUID orgId) {
+        jdbc.sql("UPDATE users SET org_id = NULL WHERE org_id = :orgId")
+                .param("orgId", orgId)
+                .update();
     }
 
     static User mapRow(ResultSet rs, int rowNum) throws SQLException {
