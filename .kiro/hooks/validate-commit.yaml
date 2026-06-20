@@ -1,0 +1,9 @@
+name: validate-commit
+description: Blocks git commits missing what/why/breaking fields that feed the RAG memory.
+trigger:
+  type: PreToolUse
+  matcher: Bash
+action:
+  type: command
+  command: .agents/scripts/validate-commit.sh
+  timeout: 5

@@ -1,0 +1,8 @@
+name: post-commit-clear
+description: After each git commit, reminds the agent to request /clear before the next task.
+trigger:
+  type: PostToolUse
+  matcher: Bash
+action:
+  type: command
+  command: ~/.kiro/hooks/post-commit-clear.sh

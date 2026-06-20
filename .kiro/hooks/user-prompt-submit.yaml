@@ -1,0 +1,8 @@
+name: user-prompt-submit
+description: Finds the relevant skill and queries Chroma memory before each task, injecting precise context.
+trigger:
+  type: UserPromptSubmit
+action:
+  type: command
+  command: .agents/scripts/user-prompt-submit.sh
+  timeout: 15

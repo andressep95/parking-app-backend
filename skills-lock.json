@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "311-frameworks-spring-jdbc": {
+      "source": "jabrena/cursor-rules-java",
+      "sourceType": "github",
+      "skillPath": "skills/311-frameworks-spring-jdbc/SKILL.md",
+      "computedHash": "4e0253063fd96dfaca6391d79890605e16d9ea09c640f66f93d60193a4124090"
+    }
+  }
+}

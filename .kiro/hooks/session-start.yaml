@@ -1,0 +1,8 @@
+name: session-start
+description: Auto-detects the project stack and injects it as context at session start.
+trigger:
+  type: SessionStart
+action:
+  type: command
+  command: .agents/scripts/session-start.sh
+  timeout: 5
