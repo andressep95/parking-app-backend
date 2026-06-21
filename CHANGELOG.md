@@ -6,6 +6,47 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### [f8c92a9] — 2026-06-21
+
+**feat(api): implement locations, terminals, tariffs and POS flows**
+
+> what: Agrega los endpoints REST para locaciones (US-007), terminales
+> (US-008), tarifas (US-009), turnos (US-011), sesiones de
+> estacionamiento (US-012/013) y los endpoints POS de bootstrap
+> y polling de estado (US-010/014), con RBAC y aislamiento por org.
+
+#### Added
+
+- `src/main/java/com/cloudcentinel/parkingapp/location/CreateLocationRequest.java`
+- `src/main/java/com/cloudcentinel/parkingapp/location/Location.java`
+- `src/main/java/com/cloudcentinel/parkingapp/location/LocationController.java`
+- `src/main/java/com/cloudcentinel/parkingapp/location/LocationRepository.java`
+- `src/main/java/com/cloudcentinel/parkingapp/location/LocationService.java`
+- `src/main/java/com/cloudcentinel/parkingapp/location/UpdateLocationRequest.java`
+- `src/main/java/com/cloudcentinel/parkingapp/parking/CheckoutRequest.java`
+- `src/main/java/com/cloudcentinel/parkingapp/parking/CreateParkingSessionRequest.java`
+- `src/main/java/com/cloudcentinel/parkingapp/parking/ParkingSessionController.java`
+- `src/main/java/com/cloudcentinel/parkingapp/parking/ParkingSessionRepository.java`
+- `src/main/java/com/cloudcentinel/parkingapp/parking/ParkingSessionResponse.java`
+- `src/main/java/com/cloudcentinel/parkingapp/parking/ParkingSessionService.java`
+- `src/main/java/com/cloudcentinel/parkingapp/parking/TariffSnapshot.java`
+- `src/main/java/com/cloudcentinel/parkingapp/pos/BootstrapResponse.java`
+- `src/main/java/com/cloudcentinel/parkingapp/pos/LocationStateResponse.java`
+- `src/main/java/com/cloudcentinel/parkingapp/pos/PosBootstrapService.java`
+- `src/main/java/com/cloudcentinel/parkingapp/pos/PosController.java`
+- `src/main/java/com/cloudcentinel/parkingapp/pos/PosLocationStateService.java`
+- `src/main/java/com/cloudcentinel/parkingapp/shift/CloseShiftRequest.java`
+- `src/main/java/com/cloudcentinel/parkingapp/shift/OpenShiftRequest.java`
+- _…and 15 more_
+
+#### Changed
+
+- `.agents/memory/token-usage.jsonl`
+- `docs/schema.sql`
+- `src/main/java/com/cloudcentinel/parkingapp/terminal/TerminalRepository.java`
+
+---
+
 ### [799ad71] — 2026-06-20
 
 **feat(user,organization): implement full CRUD for users and organizations**
