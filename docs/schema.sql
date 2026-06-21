@@ -103,6 +103,7 @@ CREATE TABLE locations (
     location_name   VARCHAR(255) NOT NULL,
     address         TEXT        NOT NULL,
     city            VARCHAR(100) NOT NULL,
+    capacity INTEGER NOT NULL DEFAULT 0,
     timezone        VARCHAR(50)  NOT NULL DEFAULT 'America/Santiago',
     location_status location_status NOT NULL DEFAULT 'ACTIVE',
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
