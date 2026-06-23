@@ -6,6 +6,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### [dd580fd] — 2026-06-22
+
+**feat(domain): decouple terminals from locations, add operator quota**
+
+> what: Removes location_id from terminals; locations gain max_operators
+> quota enforced on CUSTOMER-created operators; POS location context now
+> comes from the operator's assigned location_id instead of terminal
+> why: Terminals serve only as concurrent-session guards; operator
+
+#### Changed
+
+- `docker/init/01_schema.sql`
+- `docs/user-stories/US-005-crud-usuarios.md`
+- `docs/user-stories/US-007-crud-locaciones.md`
+- `docs/user-stories/US-008-crud-terminales.md`
+- `src/main/java/com/cloudcentinel/parkingapp/location/CreateLocationRequest.java`
+- `src/main/java/com/cloudcentinel/parkingapp/location/Location.java`
+- `src/main/java/com/cloudcentinel/parkingapp/location/LocationRepository.java`
+- `src/main/java/com/cloudcentinel/parkingapp/location/LocationService.java`
+- `src/main/java/com/cloudcentinel/parkingapp/location/UpdateLocationRequest.java`
+- `src/main/java/com/cloudcentinel/parkingapp/parking/ParkingSessionService.java`
+- `src/main/java/com/cloudcentinel/parkingapp/pos/PosBootstrapService.java`
+- `src/main/java/com/cloudcentinel/parkingapp/pos/PosLocationStateService.java`
+- `src/main/java/com/cloudcentinel/parkingapp/shift/ShiftService.java`
+- `src/main/java/com/cloudcentinel/parkingapp/terminal/CreateTerminalRequest.java`
+- `src/main/java/com/cloudcentinel/parkingapp/terminal/Terminal.java`
+- `src/main/java/com/cloudcentinel/parkingapp/terminal/TerminalController.java`
+- `src/main/java/com/cloudcentinel/parkingapp/terminal/TerminalRepository.java`
+- `src/main/java/com/cloudcentinel/parkingapp/terminal/TerminalService.java`
+- `src/main/java/com/cloudcentinel/parkingapp/terminal/UpdateTerminalRequest.java`
+- `src/main/java/com/cloudcentinel/parkingapp/user/UserService.java`
+
+---
+
 ### [f8c92a9] — 2026-06-21
 
 **feat(api): implement locations, terminals, tariffs and POS flows**
