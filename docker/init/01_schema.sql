@@ -78,6 +78,8 @@ CREATE TABLE locations (
     location_name   VARCHAR(255)     NOT NULL,
     address         TEXT             NOT NULL,
     city            VARCHAR(100)     NOT NULL,
+    capacity        INTEGER          NOT NULL DEFAULT 0 CHECK (capacity >= 0),
+    max_operators   INTEGER          NOT NULL DEFAULT 0 CHECK (max_operators >= 0),
     timezone        VARCHAR(50)      NOT NULL DEFAULT 'America/Santiago',
     location_status location_status  NOT NULL DEFAULT 'ACTIVE',
     created_at      TIMESTAMPTZ      NOT NULL DEFAULT now()
@@ -96,14 +98,11 @@ CREATE TABLE terminals (
     serial_number      VARCHAR(100)    NOT NULL UNIQUE,
     model              VARCHAR(100)    NOT NULL,
     org_id             UUID            NOT NULL REFERENCES organizations(id) ON DELETE RESTRICT,
-    location_id        UUID            NOT NULL REFERENCES locations(id)     ON DELETE RESTRICT,
     status             terminal_status NOT NULL DEFAULT 'OFFLINE',
     active_operator_id UUID            REFERENCES users(id) ON DELETE SET NULL,
     app_version        VARCHAR(20),
     last_heartbeat     TIMESTAMPTZ
 );
-
-CREATE INDEX idx_terminals_location_id ON terminals(location_id);
 
 ALTER TABLE user_sessions
     ADD CONSTRAINT fk_user_sessions_terminal

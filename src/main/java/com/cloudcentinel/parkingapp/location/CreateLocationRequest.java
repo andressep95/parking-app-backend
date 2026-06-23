@@ -8,5 +8,6 @@ public record CreateLocationRequest(
         String  address,
         String  city,
         Integer capacity,
+        Integer maxOperators,
         String  timezone
 ) {}

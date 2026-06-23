@@ -30,59 +30,75 @@ public class PosBootstrapService {
     }
 
     public BootstrapResponse bootstrap(Jwt jwt, String serialNumber) {
-        // 1. Resolve terminal + location + org from serialNumber
-        TerminalLocationOrg tlo = findTerminalLocationOrg(serialNumber)
-                .orElseThrow(() -> new NotFoundException("terminal_no_registrado"));
-
-        if (!"ACTIVE".equals(tlo.locationStatus())) {
-            throw new BadRequestException("locacion_no_disponible");
-        }
-
-        // 2. Validate that the caller's session terminal matches
+        // 1. Resolve caller and their active session
         User caller = loadCaller(jwt);
         UserSession session = sessions.findByUserId(caller.id())
                 .orElseThrow(() -> new ForbiddenException("sesion_no_encontrada"));
-        if (!tlo.terminalId().equals(session.terminalId())) {
+
+        // 2. Verify terminal is registered and matches the caller's session
+        TerminalInfo terminal = findTerminalBySerial(serialNumber)
+                .orElseThrow(() -> new NotFoundException("terminal_no_registrado"));
+        if (!terminal.id().equals(session.terminalId())) {
             throw new ForbiddenException("terminal_no_pertenece_a_sesion");
         }
 
-        // 3. Query tariffs
-        List<BootstrapTariff> tariffs = loadActiveTariffs(tlo.locationId());
+        // 3. Load location and org from the operator's assigned location
+        if (caller.locationId() == null) {
+            throw new BadRequestException("operator_sin_locacion");
+        }
+        LocationOrg locationOrg = findLocationOrg(caller.locationId())
+                .orElseThrow(() -> new NotFoundException("locacion_no_encontrada"));
+        if (!"ACTIVE".equals(locationOrg.locationStatus())) {
+            throw new BadRequestException("locacion_no_disponible");
+        }
+        if (!terminal.orgId().equals(locationOrg.orgId())) {
+            throw new ForbiddenException("terminal_no_pertenece_a_org");
+        }
 
-        // 4. Query active sessions
-        List<BootstrapSession> activeSessions = loadActiveSessions(tlo.locationId());
-
-        // 5. Query current shift for this operator
-        BootstrapShift currentShift = loadCurrentShift(caller.id()).orElse(null);
+        // 4. Query tariffs, active sessions and current shift
+        List<BootstrapTariff>  tariffs        = loadActiveTariffs(caller.locationId());
+        List<BootstrapSession> activeSessions = loadActiveSessions(caller.locationId());
+        BootstrapShift         currentShift   = loadCurrentShift(caller.id()).orElse(null);
 
         return new BootstrapResponse(
-                new BootstrapTerminal(tlo.terminalId(), tlo.serialNumber(), tlo.model()),
-                new BootstrapOrganization(tlo.orgId(), tlo.orgName(), tlo.rutCompany(),
-                        tlo.orgEmail(), tlo.phoneNumber()),
-                new BootstrapLocation(tlo.locationId(), tlo.locationName(), tlo.address(),
-                        tlo.city(), tlo.timezone(), tlo.capacity()),
+                new BootstrapTerminal(terminal.id(), terminal.serialNumber(), terminal.model()),
+                new BootstrapOrganization(locationOrg.orgId(), locationOrg.orgName(),
+                        locationOrg.rutCompany(), locationOrg.orgEmail(), locationOrg.phoneNumber()),
+                new BootstrapLocation(locationOrg.locationId(), locationOrg.locationName(),
+                        locationOrg.address(), locationOrg.city(),
+                        locationOrg.timezone(), locationOrg.capacity()),
                 tariffs,
                 activeSessions,
                 currentShift
         );
     }
 
-    private Optional<TerminalLocationOrg> findTerminalLocationOrg(String serialNumber) {
+    private Optional<TerminalInfo> findTerminalBySerial(String serialNumber) {
         return jdbc.sql("""
-                SELECT t.id AS terminal_id, t.serial_number, t.model,
-                       l.id AS location_id, l.location_name, l.address, l.city,
-                       l.capacity, l.timezone, l.location_status::text AS location_status,
-                       o.id AS org_id, o.org_name, o.rut_company, o.org_email, o.phone_number
-                FROM terminals t
-                JOIN locations l ON t.location_id = l.id
-                JOIN organizations o ON l.org_id = o.id
-                WHERE t.serial_number = :sn
+                SELECT id, serial_number, model, org_id
+                FROM terminals WHERE serial_number = :sn
                 """)
                 .param("sn", serialNumber)
-                .query((rs, rn) -> new TerminalLocationOrg(
-                        UUID.fromString(rs.getString("terminal_id")),
+                .query((rs, rn) -> new TerminalInfo(
+                        UUID.fromString(rs.getString("id")),
                         rs.getString("serial_number"),
                         rs.getString("model"),
+                        UUID.fromString(rs.getString("org_id"))
+                ))
+                .optional();
+    }
+
+    private Optional<LocationOrg> findLocationOrg(UUID locationId) {
+        return jdbc.sql("""
+                SELECT l.id AS location_id, l.location_name, l.address, l.city,
+                       l.capacity, l.timezone, l.location_status::text AS location_status,
+                       o.id AS org_id, o.org_name, o.rut_company, o.org_email, o.phone_number
+                FROM locations l
+                JOIN organizations o ON l.org_id = o.id
+                WHERE l.id = :locationId
+                """)
+                .param("locationId", locationId)
+                .query((rs, rn) -> new LocationOrg(
                         UUID.fromString(rs.getString("location_id")),
                         rs.getString("location_name"),
                         rs.getString("address"),
@@ -160,8 +176,9 @@ public class PosBootstrapService {
                 .orElseThrow(() -> new NotFoundException("usuario_no_encontrado"));
     }
 
-    private record TerminalLocationOrg(
-            UUID terminalId, String serialNumber, String model,
+    private record TerminalInfo(UUID id, String serialNumber, String model, UUID orgId) {}
+
+    private record LocationOrg(
             UUID locationId, String locationName, String address,
             String city, int capacity, String timezone, String locationStatus,
             UUID orgId, String orgName, String rutCompany,

@@ -20,9 +20,13 @@ public class LocationRepository {
 
     public Optional<Location> findById(UUID id) {
         return jdbc.sql("""
-                SELECT id, org_id, location_name, address, city, capacity,
-                       timezone, location_status::text, created_at
-                FROM locations WHERE id = :id
+                SELECT l.id, l.org_id, l.location_name, l.address, l.city, l.capacity,
+                       l.max_operators, l.timezone, l.location_status::text, l.created_at,
+                       (SELECT COUNT(*) FROM users u
+                        WHERE u.location_id = l.id
+                          AND u.role = 'OPERATOR'
+                          AND u.user_status = 'ACTIVE') AS active_operators_count
+                FROM locations l WHERE l.id = :id
                 """)
                 .param("id", id)
                 .query(LocationRepository::mapRow)
@@ -31,9 +35,13 @@ public class LocationRepository {
 
     public List<Location> findAll() {
         return jdbc.sql("""
-                SELECT id, org_id, location_name, address, city, capacity,
-                       timezone, location_status::text, created_at
-                FROM locations ORDER BY created_at DESC
+                SELECT l.id, l.org_id, l.location_name, l.address, l.city, l.capacity,
+                       l.max_operators, l.timezone, l.location_status::text, l.created_at,
+                       (SELECT COUNT(*) FROM users u
+                        WHERE u.location_id = l.id
+                          AND u.role = 'OPERATOR'
+                          AND u.user_status = 'ACTIVE') AS active_operators_count
+                FROM locations l ORDER BY l.created_at DESC
                 """)
                 .query(LocationRepository::mapRow)
                 .list();
@@ -41,17 +49,21 @@ public class LocationRepository {
 
     public List<Location> findByOrgId(UUID orgId) {
         return jdbc.sql("""
-                SELECT id, org_id, location_name, address, city, capacity,
-                       timezone, location_status::text, created_at
-                FROM locations WHERE org_id = :orgId ORDER BY created_at DESC
+                SELECT l.id, l.org_id, l.location_name, l.address, l.city, l.capacity,
+                       l.max_operators, l.timezone, l.location_status::text, l.created_at,
+                       (SELECT COUNT(*) FROM users u
+                        WHERE u.location_id = l.id
+                          AND u.role = 'OPERATOR'
+                          AND u.user_status = 'ACTIVE') AS active_operators_count
+                FROM locations l WHERE l.org_id = :orgId ORDER BY l.created_at DESC
                 """)
                 .param("orgId", orgId)
                 .query(LocationRepository::mapRow)
                 .list();
     }
 
-    public boolean hasTerminals(UUID locationId) {
-        Integer count = jdbc.sql("SELECT COUNT(*) FROM terminals WHERE location_id = :id")
+    public boolean hasAssignedOperators(UUID locationId) {
+        Integer count = jdbc.sql("SELECT COUNT(*) FROM users WHERE location_id = :id")
                 .param("id", locationId)
                 .query(Integer.class)
                 .single();
@@ -70,13 +82,13 @@ public class LocationRepository {
     }
 
     public Location insert(UUID orgId, String locationName, String address,
-                           String city, int capacity, String timezone) {
+                           String city, int capacity, int maxOperators, String timezone) {
         UUID id = UUID.randomUUID();
         jdbc.sql("""
                 INSERT INTO locations
-                    (id, org_id, location_name, address, city, capacity, timezone, location_status)
+                    (id, org_id, location_name, address, city, capacity, max_operators, timezone, location_status)
                 VALUES
-                    (:id, :orgId, :locationName, :address, :city, :capacity, :timezone, 'ACTIVE')
+                    (:id, :orgId, :locationName, :address, :city, :capacity, :maxOperators, :timezone, 'ACTIVE')
                 """)
                 .param("id",           id)
                 .param("orgId",        orgId)
@@ -84,19 +96,21 @@ public class LocationRepository {
                 .param("address",      address)
                 .param("city",         city)
                 .param("capacity",     capacity)
+                .param("maxOperators", maxOperators)
                 .param("timezone",     timezone)
                 .update();
         return findById(id).orElseThrow();
     }
 
     public void update(UUID id, String locationName, String address,
-                       String city, Integer capacity, String timezone) {
+                       String city, Integer capacity, Integer maxOperators, String timezone) {
         jdbc.sql("""
                 UPDATE locations SET
                     location_name = COALESCE(:locationName, location_name),
                     address       = COALESCE(:address,      address),
                     city          = COALESCE(:city,         city),
                     capacity      = COALESCE(:capacity,     capacity),
+                    max_operators = COALESCE(:maxOperators, max_operators),
                     timezone      = COALESCE(:timezone,     timezone)
                 WHERE id = :id
                 """)
@@ -104,6 +118,7 @@ public class LocationRepository {
                 .param("address",      address)
                 .param("city",         city)
                 .param("capacity",     capacity)
+                .param("maxOperators", maxOperators)
                 .param("timezone",     timezone)
                 .param("id",           id)
                 .update();
@@ -130,6 +145,8 @@ public class LocationRepository {
                 rs.getString("address"),
                 rs.getString("city"),
                 rs.getInt("capacity"),
+                rs.getInt("max_operators"),
+                rs.getInt("active_operators_count"),
                 rs.getString("timezone"),
                 rs.getString("location_status"),
                 rs.getTimestamp("created_at").toInstant()

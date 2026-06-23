@@ -10,6 +10,8 @@ public record Location(
         String  address,
         String  city,
         int     capacity,
+        int     maxOperators,
+        int     activeOperatorsCount,
         String  timezone,
         String  locationStatus,
         Instant createdAt

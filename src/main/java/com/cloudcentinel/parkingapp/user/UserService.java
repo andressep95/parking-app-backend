@@ -1,5 +1,7 @@
 package com.cloudcentinel.parkingapp.user;
 
+import com.cloudcentinel.parkingapp.location.Location;
+import com.cloudcentinel.parkingapp.location.LocationRepository;
 import com.cloudcentinel.parkingapp.session.SessionRepository;
 import com.cloudcentinel.parkingapp.shared.cognito.CognitoAdminClient;
 import com.cloudcentinel.parkingapp.shared.exception.BadRequestException;
@@ -17,14 +19,17 @@ import java.util.UUID;
 @Service
 public class UserService {
 
-    private final UserRepository    users;
+    private final UserRepository     users;
+    private final LocationRepository locations;
     private final CognitoAdminClient cognito;
-    private final SessionRepository sessions;
+    private final SessionRepository  sessions;
 
-    public UserService(UserRepository users, CognitoAdminClient cognito, SessionRepository sessions) {
-        this.users    = users;
-        this.cognito  = cognito;
-        this.sessions = sessions;
+    public UserService(UserRepository users, LocationRepository locations,
+                       CognitoAdminClient cognito, SessionRepository sessions) {
+        this.users     = users;
+        this.locations = locations;
+        this.cognito   = cognito;
+        this.sessions  = sessions;
     }
 
     public UserResponse createUser(Jwt jwt, CreateUserRequest req) {
@@ -34,11 +39,9 @@ public class UserService {
         if (req.role() == null || !List.of("ADMIN", "CUSTOMER", "OPERATOR").contains(req.role())) {
             throw new BadRequestException("rol_invalido");
         }
-        // CUSTOMER can only create OPERATOR
         if (callerIsCustomer && !callerIsAdmin && !"OPERATOR".equals(req.role())) {
-            throw new ForbiddenException("sin_permiso");
+            throw new ForbiddenException("rol_no_permitido");
         }
-        // CUSTOMER must use their own orgId
         if (callerIsCustomer && !callerIsAdmin) {
             User caller = loadCaller(jwt);
             if (req.orgId() == null || !req.orgId().equals(caller.orgId())) {
@@ -53,8 +56,18 @@ public class UserService {
             throw new BadRequestException("location_id_requerido_para_operator");
         }
 
-        String rut = RutUtils.normalizeAndValidate(req.rut());
+        if (req.locationId() != null) {
+            Location loc = locations.findById(req.locationId())
+                    .orElseThrow(() -> new NotFoundException("locacion_no_encontrada"));
+            if (req.orgId() != null && !loc.orgId().equals(req.orgId())) {
+                throw new BadRequestException("location_no_pertenece_a_org");
+            }
+            if ("OPERATOR".equals(req.role())) {
+                checkOperatorQuota(loc);
+            }
+        }
 
+        String rut = RutUtils.normalizeAndValidate(req.rut());
         if (users.existsByRut(rut)) throw new ConflictException("rut_ya_registrado");
         if (users.existsByEmail(req.email())) throw new ConflictException("email_ya_registrado");
 
@@ -98,7 +111,6 @@ public class UserService {
         User target = users.findById(id)
                 .orElseThrow(() -> new NotFoundException("usuario_no_encontrado"));
 
-        // OPERATOR can only see themselves; ADMIN and CUSTOMER see anyone
         if (isOnlyOperator(jwt)) {
             User caller = loadCaller(jwt);
             if (!caller.id().equals(target.id())) throw new ForbiddenException("sin_permiso");
@@ -112,9 +124,26 @@ public class UserService {
         User target = users.findById(id)
                 .orElseThrow(() -> new NotFoundException("usuario_no_encontrado"));
 
+        boolean callerIsAdmin    = hasRole(jwt, "ADMIN");
+        boolean callerIsCustomer = hasRole(jwt, "CUSTOMER");
+
         if (isOnlyOperator(jwt)) {
             User caller = loadCaller(jwt);
             if (!caller.id().equals(target.id())) throw new ForbiddenException("sin_permiso");
+        } else if (callerIsCustomer && !callerIsAdmin) {
+            User caller = loadCaller(jwt);
+            if (!caller.orgId().equals(target.orgId())) throw new ForbiddenException("sin_permiso");
+        }
+
+        if (req.locationId() != null) {
+            Location loc = locations.findById(req.locationId())
+                    .orElseThrow(() -> new NotFoundException("locacion_no_encontrada"));
+            if (!loc.orgId().equals(target.orgId())) {
+                throw new BadRequestException("location_no_pertenece_a_org");
+            }
+            if ("OPERATOR".equals(target.role())) {
+                checkOperatorQuota(loc);
+            }
         }
 
         users.update(id, req.email(), req.givenName(), req.familyName(),
@@ -154,7 +183,12 @@ public class UserService {
         cognito.setUserPassword(target.rut(), req.newPassword());
     }
 
-    // Returns true when the caller has ONLY the OPERATOR role (not ADMIN or CUSTOMER)
+    private void checkOperatorQuota(Location loc) {
+        if (loc.maxOperators() > 0 && loc.activeOperatorsCount() >= loc.maxOperators()) {
+            throw new ConflictException("cupo_operadores_agotado");
+        }
+    }
+
     private boolean isOnlyOperator(Jwt jwt) {
         List<String> groups = jwt.getClaimAsStringList("cognito:groups");
         if (groups == null) return false;

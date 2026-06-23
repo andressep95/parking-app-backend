@@ -5,10 +5,11 @@ public record UpdateLocationRequest(
         String  address,
         String  city,
         Integer capacity,
+        Integer maxOperators,
         String  timezone
 ) {
     public boolean hasAnyField() {
         return locationName != null || address != null || city != null
-                || capacity != null || timezone != null;
+                || capacity != null || maxOperators != null || timezone != null;
     }
 }

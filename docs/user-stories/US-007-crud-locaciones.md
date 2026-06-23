@@ -4,10 +4,10 @@
 
 | ID | Historia |
 |----|----------|
-| US-007-A | **Como** ADMIN o CUSTOMER, **quiero** crear una locación dentro de una organización, **para** definir los puntos físicos de estacionamiento. |
+| US-007-A | **Como** ADMIN, **quiero** crear una locación dentro de una organización, **para** definir los puntos físicos de estacionamiento y opcionalmente limitar cuántos OPERATORs pueden trabajar en ella. |
 | US-007-B | **Como** ADMIN o CUSTOMER, **quiero** listar las locaciones, **para** tener visibilidad de los puntos bajo mi gestión. |
-| US-007-C | **Como** cualquier usuario autenticado, **quiero** ver el detalle de una locación, **para** conocer su configuración (zona horaria, estado). |
-| US-007-D | **Como** ADMIN o CUSTOMER, **quiero** actualizar los datos de una locación, **para** corregir información o cambiar la zona horaria. |
+| US-007-C | **Como** cualquier usuario autenticado, **quiero** ver el detalle de una locación, **para** conocer su configuración y el estado de cupo de operadores. |
+| US-007-D | **Como** ADMIN o CUSTOMER, **quiero** actualizar los datos de una locación, **para** corregir información o ajustar el cupo de operadores. |
 | US-007-E | **Como** ADMIN, **quiero** eliminar una locación, **para** retirarla del sistema cuando ya no opere. |
 | US-007-F | **Como** ADMIN o CUSTOMER, **quiero** activar o desactivar una locación, **para** suspender operaciones en un punto sin eliminarlo. |
 
@@ -17,23 +17,26 @@
 
 ```json
 {
-  "id":             "uuid",
-  "orgId":          "uuid-org",
-  "locationName":   "Sucursal Centro",
-  "address":        "Av. Bernardo O'Higgins 1234",
-  "city":           "Santiago",
-  "timezone":       "America/Santiago",
-  "capacity":       150,
-  "locationStatus": "ACTIVE",
-  "createdAt":      "2024-01-15T10:30:00Z"
+  "id":                   "uuid",
+  "orgId":                "uuid-org",
+  "locationName":         "Sucursal Centro",
+  "address":              "Av. Bernardo O'Higgins 1234",
+  "city":                 "Santiago",
+  "timezone":             "America/Santiago",
+  "capacity":             150,
+  "maxOperators":         5,
+  "activeOperatorsCount": 3,
+  "locationStatus":       "ACTIVE",
+  "createdAt":            "2024-01-15T10:30:00Z"
 }
 ```
 
 > `timezone` es crítica: turnos, ingresos y egresos de vehículos se interpretan en la zona horaria de la locación.
-> `capacity` es el número de puestos físicos de estacionamiento. Se gestiona en este CRUD (creación y actualización) y el POS lo recibe como dato informativo vía `GET /pos/bootstrap/{serialNumber}`.
+> `capacity` es el número de puestos físicos de estacionamiento.
+> `maxOperators` es el techo de usuarios con rol OPERATOR que pueden ser asignados a esta locación. El valor `0` significa **sin restricción**. Si no se envía al crear, el sistema usa `0` por defecto.
+> `activeOperatorsCount` es un campo **computado** (solo lectura): COUNT de usuarios con `role = 'OPERATOR'`, `user_status = 'ACTIVE'` y `location_id` apuntando a esta locación.
 >
->
-> **Nota de acceso**: el rol OPERATOR accede a la información de locaciones **exclusivamente** a través de `GET /pos/bootstrap/{serialNumber}`. No tiene acceso a los endpoints REST de este CRUD.
+> **Nota de acceso**: el rol OPERATOR accede a la información de locaciones **exclusivamente** a través de `GET /pos/bootstrap/{serialNumber}`. No tiene acceso a los endpoints REST de este CRUD. La información de locación que recibe proviene de su propio `location_id` asignado como usuario, no del terminal.
 
 ---
 
@@ -61,8 +64,9 @@
 | AC-2 | `locationName`, `address`, `city` y `orgId` son obligatorios. |
 | AC-3 | Si `timezone` no se envía, se usa `America/Santiago` por defecto. |
 | AC-4 | `capacity` (número de puestos físicos) es obligatorio y debe ser `>= 1`. |
-| AC-5 | La locación se crea en estado `ACTIVE`. |
-| AC-6 | Retorna `201 Created` con el objeto completo. |
+| AC-5 | `maxOperators` es opcional. Si no se envía, se usa `0` (sin límite). Si se envía, debe ser `>= 0`. |
+| AC-6 | La locación se crea en estado `ACTIVE`. |
+| AC-7 | Retorna `201 Created` con el objeto completo incluyendo `activeOperatorsCount: 0`. |
 
 ### Request
 
@@ -77,7 +81,8 @@ Content-Type: application/json
   "address":      "Av. Bernardo O'Higgins 1234",
   "city":         "Santiago",
   "timezone":     "America/Santiago",
-  "capacity":     150
+  "capacity":     150,
+  "maxOperators": 5
 }
 ```
 
@@ -85,15 +90,17 @@ Content-Type: application/json
 
 ```json
 {
-  "id":             "cccccccc-cccc-cccc-cccc-cccccccccccc",
-  "orgId":          "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-  "locationName":   "Sucursal Centro",
-  "address":        "Av. Bernardo O'Higgins 1234",
-  "city":           "Santiago",
-  "timezone":       "America/Santiago",
-  "capacity":       150,
-  "locationStatus": "ACTIVE",
-  "createdAt":      "2024-01-15T10:30:00Z"
+  "id":                   "cccccccc-cccc-cccc-cccc-cccccccccccc",
+  "orgId":                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+  "locationName":         "Sucursal Centro",
+  "address":              "Av. Bernardo O'Higgins 1234",
+  "city":                 "Santiago",
+  "timezone":             "America/Santiago",
+  "capacity":             150,
+  "maxOperators":         5,
+  "activeOperatorsCount": 0,
+  "locationStatus":       "ACTIVE",
+  "createdAt":            "2024-01-15T10:30:00Z"
 }
 ```
 
@@ -103,6 +110,7 @@ Content-Type: application/json
 |------|--------|-------|
 | 400  | `campos_requeridos_faltantes` | Falta `orgId`, `locationName`, `address`, `city` o `capacity` |
 | 400  | `capacity_invalido` | `capacity` es menor a `1` |
+| 400  | `max_operators_invalido` | `maxOperators` es menor a `0` |
 | 404  | `organizacion_no_encontrada` | El `orgId` no existe |
 
 ---
@@ -129,12 +137,14 @@ Authorization: Bearer {accessToken}
 ```json
 [
   {
-    "id":             "cccccccc-cccc-cccc-cccc-cccccccccccc",
-    "orgId":          "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-    "locationName":   "Sucursal Centro",
-    "city":           "Santiago",
-    "locationStatus": "ACTIVE",
-    "timezone":       "America/Santiago"
+    "id":                   "cccccccc-cccc-cccc-cccc-cccccccccccc",
+    "orgId":                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+    "locationName":         "Sucursal Centro",
+    "city":                 "Santiago",
+    "locationStatus":       "ACTIVE",
+    "timezone":             "America/Santiago",
+    "maxOperators":         5,
+    "activeOperatorsCount": 3
   }
 ]
 ```
@@ -150,6 +160,7 @@ Authorization: Bearer {accessToken}
 | AC-1 | ADMIN puede ver cualquier locación. |
 | AC-2 | CUSTOMER puede ver solo locaciones de su organización. |
 | AC-3 | Si el ID no existe, retorna `404` con `locacion_no_encontrada`. |
+| AC-4 | La respuesta incluye `maxOperators` y `activeOperatorsCount` calculado en el momento de la consulta. |
 
 ---
 
@@ -161,10 +172,12 @@ Authorization: Bearer {accessToken}
 |---|----------|
 | AC-1 | ADMIN puede actualizar cualquier locación. |
 | AC-2 | CUSTOMER puede actualizar solo locaciones de su organización. |
-| AC-3 | Campos actualizables: `locationName`, `address`, `city`, `timezone`, `capacity`. |
+| AC-3 | Campos actualizables: `locationName`, `address`, `city`, `timezone`, `capacity`, `maxOperators`. |
 | AC-4 | `capacity` debe ser `>= 1` si se envía. |
-| AC-5 | `orgId` no se puede modificar (pertenencia de la locación es inmutable). |
-| AC-6 | Si el body está vacío, retorna `400` con `sin_campos_para_actualizar`. |
+| AC-5 | `maxOperators` debe ser `>= 0` si se envía. El valor `0` elimina la restricción. |
+| AC-6 | Si se envía `maxOperators > 0` y el nuevo valor es menor que `activeOperatorsCount`, retorna `409` con `max_operators_inferior_a_activos`. |
+| AC-7 | `orgId` no se puede modificar (pertenencia de la locación es inmutable). |
+| AC-8 | Si el body está vacío, retorna `400` con `sin_campos_para_actualizar`. |
 
 ### Request
 
@@ -176,13 +189,20 @@ Content-Type: application/json
 {
   "locationName": "Sucursal Centro (Piso 2)",
   "timezone":     "America/Santiago",
-  "capacity":     200
+  "capacity":     200,
+  "maxOperators": 8
 }
 ```
 
 ### Response `200 OK`
 
-Retorna el objeto completo con los cambios aplicados.
+Retorna el objeto completo con los cambios aplicados, incluyendo `activeOperatorsCount` actualizado.
+
+### Errores
+
+| HTTP | Código | Causa |
+|------|--------|-------|
+| 409  | `max_operators_inferior_a_activos` | El nuevo `maxOperators` es menor que el número de operadores activos actualmente asignados |
 
 ---
 
@@ -193,7 +213,7 @@ Retorna el objeto completo con los cambios aplicados.
 | # | Criterio |
 |---|----------|
 | AC-1 | Solo ADMIN puede eliminar locaciones. |
-| AC-2 | No se puede eliminar si tiene terminales registradas. Retorna `409` con `locacion_tiene_terminales`. |
+| AC-2 | No se puede eliminar si tiene operadores asignados (cualquier estado de usuario). Retorna `409` con `locacion_tiene_operadores`. El ADMIN debe reasignar o desactivar los operadores primero. |
 | AC-3 | No se puede eliminar si tiene sesiones de estacionamiento activas (`ACTIVE`). Retorna `409` con `locacion_tiene_sesiones_activas`. |
 | AC-4 | Si el ID no existe, retorna `404`. |
 
@@ -212,9 +232,9 @@ sequenceDiagram
         API-->>ADM: 404 locacion_no_encontrada
     end
 
-    API->>DB: SELECT COUNT(*) FROM terminals WHERE location_id = ?
-    alt Tiene terminales
-        API-->>ADM: 409 locacion_tiene_terminales
+    API->>DB: SELECT COUNT(*) FROM users WHERE location_id = ?
+    alt Tiene operadores asignados
+        API-->>ADM: 409 locacion_tiene_operadores
     end
 
     API->>DB: SELECT COUNT(*) FROM parking_sessions<br/>WHERE location_id = ? AND status = 'ACTIVE'
@@ -259,22 +279,32 @@ sequenceDiagram
 | Eliminar | Cualquiera | ✗ | ✗ |
 | Activar/Desactivar | Cualquiera | Solo su org | ✗ |
 
-> "vía bootstrap" significa que el OPERATOR recibe esta información en `GET /pos/bootstrap/{serialNumber}`, no mediante estos endpoints REST.
+> "vía bootstrap" significa que el OPERATOR recibe esta información en `GET /pos/bootstrap/{serialNumber}`, extraída de su propio `location_id` de usuario, no del terminal.
 
 ---
 
-## Regla de Dominio — Seriales de Máquinas por Locación
+## Regla de Dominio — Cupo de Operadores por Locación
 
-Cada locación tiene un conjunto fijo de números de serie (máquinas POS TUU) asociados a ella. Esta asociación es **exclusiva**: un serial pertenece a una y solo una locación, y no puede reasignarse a otra.
+### Responsabilidades por Rol
+
+| Quién | Qué hace |
+|-------|----------|
+| **ADMIN** | Define `maxOperators` al crear o actualizar la locación. Establece el techo de OPERATORs que el cliente puede tener en esa locación. |
+| **CUSTOMER** | Dentro del cupo asignado, crea y gestiona sus propios usuarios OPERATOR (`POST /users`, `PUT /users/{id}`). No puede eliminar usuarios. |
+| **ADMIN** | Es el único que puede eliminar usuarios (`DELETE /users/{id}`). |
+
+### Reglas de Cupo
 
 | Regla | Detalle |
 |-------|---------|
-| **Un serial → una locación** | La tabla `terminals` tiene `UNIQUE(serial_number)` y `NOT NULL location_id`. No hay seriales sin locación ni compartidos. |
-| **Binding a nivel de locación** | La pertenencia es `terminal.location_id`, no `terminal.org_id`. Dos locaciones de la misma organización tienen conjuntos de seriales separados. |
-| **Solo ADMIN gestiona la asociación** | El registro de un terminal (US-008) lo realiza solo ADMIN, asignando el serial a una locación concreta en ese momento. |
-| **El POS valida su serial en bootstrap** | `GET /pos/bootstrap/{serialNumber}` verifica que el serial del path coincide con el terminal registrado en `user_sessions` del caller. Un serial de otra locación es rechazado con `403`. |
+| **Sin restricción por defecto** | `maxOperators = 0` significa cupo ilimitado. Es el valor por defecto al crear una locación. |
+| **Cupo definido por ADMIN** | El ADMIN puede establecer `maxOperators >= 1` al crear o actualizar la locación para imponer un techo. |
+| **Conteo en tiempo real** | `activeOperatorsCount` = COUNT de `users` con `role = 'OPERATOR'`, `user_status = 'ACTIVE'` y `location_id` = esta locación. Se devuelve en cada `GET`. |
+| **Validación al asignar operador** | Al crear un OPERATOR (`POST /users`) o reasignarle locación (`PUT /users/{id}`), si `maxOperators > 0`, el sistema verifica que `activeOperatorsCount < maxOperators`. Si el cupo está lleno, retorna `409` con `cupo_operadores_agotado`. |
+| **Reducción de cupo** | Si se reduce `maxOperators` a un valor `> 0` pero inferior a `activeOperatorsCount`, retorna `409` con `max_operators_inferior_a_activos`. |
+| **Garantía de BD** | La constraint `chk_operator_has_location` en la tabla `users` garantiza que todo OPERATOR tenga siempre un `location_id` asignado. |
 
-> Esta regla garantiza que un operador que hace login con el dispositivo A no pueda operar en la locación B aunque pertenezcan a la misma organización.
+> Ver [US-005](US-005-crud-usuarios.md) — US-005-H para los criterios de aceptación de la creación de usuarios por parte del CUSTOMER.
 
 ---
 
@@ -283,8 +313,8 @@ Cada locación tiene un conjunto fijo de números de serie (máquinas POS TUU) a
 | Archivo | Rol |
 |---------|-----|
 | `location/LocationController.java` | REST endpoints |
-| `location/LocationService.java` | RBAC + validaciones de eliminación |
-| `location/LocationRepository.java` | `findById`, `findByOrgId`, `findAll`, `insert`, `update`, `delete`, `setStatus`, `hasTerminals`, `hasActiveParkingSessions` |
+| `location/LocationService.java` | RBAC + validaciones de cupo y eliminación |
+| `location/LocationRepository.java` | `findById`, `findByOrgId`, `findAll`, `insert`, `update`, `delete`, `setStatus`, `countActiveOperators`, `hasActiveParkingSessions`, `hasAssignedOperators` |
 | `location/Location.java` | Record de dominio |
 | `location/CreateLocationRequest.java` | Body de creación |
 | `location/UpdateLocationRequest.java` | Body de actualización |

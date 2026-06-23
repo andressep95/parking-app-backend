@@ -11,6 +11,7 @@
 | US-005-E | **Como** ADMIN, **quiero** eliminar un usuario, **para** revocar su acceso de forma permanente. |
 | US-005-F | **Como** ADMIN o CUSTOMER, **quiero** activar o desactivar un usuario, **para** suspender el acceso temporalmente sin eliminar la cuenta. |
 | US-005-G | **Como** ADMIN, **quiero** resetear la contraseña de un usuario, **para** ayudarlo a recuperar el acceso. |
+| US-005-H | **Como** ADMIN o CUSTOMER, **quiero** crear un usuario en el sistema, **para** dar acceso a nuevos operadores dentro de las locaciones que gestiono. |
 
 ---
 
@@ -39,6 +40,7 @@
 
 | Método | Ruta | Rol mínimo | Descripción |
 |--------|------|------------|-------------|
+| `POST`   | `/users`                      | CUSTOMER | Crear usuario |
 | `GET`    | `/users`                      | CUSTOMER | Listar usuarios |
 | `GET`    | `/users/{id}`                 | OPERATOR | Ver detalle propio / ADMIN y CUSTOMER ven cualquiera |
 | `PUT`    | `/users/{id}`                 | OPERATOR | Actualizar perfil propio / ADMIN y CUSTOMER actualizan cualquiera |
@@ -46,6 +48,77 @@
 | `POST`   | `/users/{id}/activate`        | CUSTOMER | Activar usuario |
 | `POST`   | `/users/{id}/deactivate`      | CUSTOMER | Desactivar usuario |
 | `POST`   | `/users/{id}/reset-password`  | ADMIN    | Resetear contraseña |
+
+---
+
+## US-005-H — Crear Usuario
+
+### Criterios de Aceptación
+
+| # | Criterio |
+|---|----------|
+| AC-1 | ADMIN puede crear usuarios con cualquier rol (`ADMIN`, `CUSTOMER`, `OPERATOR`). |
+| AC-2 | CUSTOMER solo puede crear usuarios con `role = OPERATOR`. Si intenta crear un `ADMIN` o `CUSTOMER`, retorna `403` con `rol_no_permitido`. |
+| AC-3 | `rut`, `email`, `givenName`, `familyName`, `role` y `orgId` son obligatorios. |
+| AC-4 | Para CUSTOMER: `orgId` debe coincidir con su propia organización. Si no coincide, retorna `403`. |
+| AC-5 | Para OPERATOR: `locationId` es obligatorio. La locación referenciada debe pertenecer a la misma organización. |
+| AC-6 | Si `locationId` se envía y la locación tiene `maxOperators > 0`, el sistema verifica que `activeOperatorsCount < maxOperators`. Si el cupo está lleno, retorna `409` con `cupo_operadores_agotado`. |
+| AC-7 | El `rut` debe ser único en el sistema. Si ya existe, retorna `409` con `rut_ya_registrado`. |
+| AC-8 | El `email` debe ser único en el sistema. Si ya existe, retorna `409` con `email_ya_registrado`. |
+| AC-9 | El usuario se crea en estado `ACTIVE`. Se provisiona en Cognito y la contraseña inicial se genera o se envía en el request (según política del User Pool). |
+| AC-10 | Retorna `201 Created` con el objeto completo del usuario creado. |
+
+### Request
+
+```
+POST /users
+Authorization: Bearer {accessToken}
+Content-Type: application/json
+
+{
+  "rut":         "33333333-3",
+  "email":       "operador@empresa.cl",
+  "givenName":   "Juan",
+  "familyName":  "Pérez",
+  "phoneNumber": "+56912345678",
+  "role":        "OPERATOR",
+  "orgId":       "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+  "locationId":  "cccccccc-cccc-cccc-cccc-cccccccccccc",
+  "password":    "Temporal.2024#"
+}
+```
+
+### Response `201 Created`
+
+```json
+{
+  "id":          "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
+  "cognitoSub":  "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "rut":         "33333333-3",
+  "email":       "operador@empresa.cl",
+  "givenName":   "Juan",
+  "familyName":  "Pérez",
+  "phoneNumber": "+56912345678",
+  "role":        "OPERATOR",
+  "userStatus":  "ACTIVE",
+  "orgId":       "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+  "locationId":  "cccccccc-cccc-cccc-cccc-cccccccccccc",
+  "createdAt":   "2024-01-15T10:30:00Z"
+}
+```
+
+### Errores
+
+| HTTP | Código | Causa |
+|------|--------|-------|
+| 400  | `campos_requeridos_faltantes` | Falta algún campo obligatorio |
+| 403  | `rol_no_permitido` | CUSTOMER intentó crear un rol distinto a `OPERATOR` |
+| 403  | — | CUSTOMER intentó crear un usuario en otra organización |
+| 404  | `organizacion_no_encontrada` | El `orgId` no existe |
+| 404  | `locacion_no_encontrada` | El `locationId` no existe o no pertenece a la org |
+| 409  | `rut_ya_registrado` | El `rut` ya existe en el sistema |
+| 409  | `email_ya_registrado` | El `email` ya existe en el sistema |
+| 409  | `cupo_operadores_agotado` | La locación tiene `maxOperators > 0` y ya está al tope |
 
 ---
 
@@ -149,8 +222,11 @@ Authorization: Bearer {accessToken}
 | AC-1 | ADMIN y CUSTOMER pueden actualizar cualquier usuario. |
 | AC-2 | OPERATOR solo puede actualizar su propio perfil. |
 | AC-3 | Campos actualizables: `email`, `givenName`, `familyName`, `phoneNumber`, `locationId`. El `role`, `rut` y `userStatus` no son modificables por este endpoint. |
-| AC-4 | Si el body no contiene ningún campo válido, retorna `400` con `sin_campos_para_actualizar`. |
-| AC-5 | Si el ID no existe, retorna `404`. |
+| AC-4 | CUSTOMER solo puede actualizar usuarios de su propia organización. Si intenta actualizar un usuario de otra org, retorna `403`. |
+| AC-5 | Si se cambia `locationId`, la nueva locación debe pertenecer a la misma organización del usuario. Si no, retorna `400` con `location_no_pertenece_a_org`. |
+| AC-6 | Si se cambia `locationId` y la nueva locación tiene `maxOperators > 0`, el sistema verifica que `activeOperatorsCount < maxOperators`. Si el cupo está lleno, retorna `409` con `cupo_operadores_agotado`. |
+| AC-7 | Si el body no contiene ningún campo válido, retorna `400` con `sin_campos_para_actualizar`. |
+| AC-8 | Si el ID no existe, retorna `404`. |
 
 ### Request
 
@@ -174,8 +250,11 @@ Retorna el usuario completo con los cambios aplicados.
 | HTTP | Código | Causa |
 |------|--------|-------|
 | 400  | `sin_campos_para_actualizar` | Body sin campos válidos |
+| 400  | `location_no_pertenece_a_org` | La nueva locación no pertenece a la org del usuario |
 | 403  | — | OPERATOR intentó actualizar a otro usuario |
+| 403  | — | CUSTOMER intentó actualizar a un usuario de otra organización |
 | 404  | `usuario_no_encontrado` | El ID no existe |
+| 409  | `cupo_operadores_agotado` | La nueva locación tiene `maxOperators > 0` y ya está al tope |
 
 ---
 
@@ -337,12 +416,15 @@ Sin body.
 
 | Operación | ADMIN | CUSTOMER | OPERATOR |
 |-----------|-------|----------|----------|
-| Listar | Todos / filtrar por org | Solo su org (org_id requerido) | ✗ |
+| Crear | Cualquier rol / cualquier org | Solo `role=OPERATOR` en su propia org | ✗ |
+| Listar | Todos / filtrar por org | Solo su org (`orgId` requerido) | ✗ |
 | Ver | Cualquiera | Cualquiera | Solo propio |
-| Actualizar | Cualquiera | Cualquiera | Solo propio |
+| Actualizar | Cualquiera | Solo usuarios de su org | Solo propio |
 | Eliminar | Cualquiera | ✗ | ✗ |
-| Activar/Desactivar | Cualquiera | Cualquiera | ✗ |
+| Activar/Desactivar | Cualquiera | Solo usuarios de su org | ✗ |
 | Reset password | Cualquiera | ✗ | ✗ |
+
+> **Nota**: cuando CUSTOMER crea o actualiza un OPERATOR asignándole un `locationId`, el sistema valida el cupo definido en `locations.max_operators`. Ver [US-007](US-007-crud-locaciones.md) — Regla de Dominio — Cupo de Operadores.
 
 ---
 

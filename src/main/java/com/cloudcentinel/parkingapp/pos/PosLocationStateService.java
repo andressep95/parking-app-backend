@@ -2,12 +2,9 @@ package com.cloudcentinel.parkingapp.pos;
 
 import com.cloudcentinel.parkingapp.pos.LocationStateResponse.*;
 import com.cloudcentinel.parkingapp.session.SessionRepository;
-import com.cloudcentinel.parkingapp.session.UserSession;
 import com.cloudcentinel.parkingapp.shared.exception.BadRequestException;
 import com.cloudcentinel.parkingapp.shared.exception.ForbiddenException;
 import com.cloudcentinel.parkingapp.shared.exception.NotFoundException;
-import com.cloudcentinel.parkingapp.terminal.Terminal;
-import com.cloudcentinel.parkingapp.terminal.TerminalRepository;
 import com.cloudcentinel.parkingapp.user.User;
 import com.cloudcentinel.parkingapp.user.UserRepository;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -23,27 +20,22 @@ public class PosLocationStateService {
 
     private final JdbcClient        jdbc;
     private final SessionRepository sessions;
-    private final TerminalRepository terminals;
     private final UserRepository    users;
 
-    public PosLocationStateService(JdbcClient jdbc, SessionRepository sessions,
-                                   TerminalRepository terminals, UserRepository users) {
-        this.jdbc      = jdbc;
-        this.sessions  = sessions;
-        this.terminals = terminals;
-        this.users     = users;
+    public PosLocationStateService(JdbcClient jdbc, SessionRepository sessions, UserRepository users) {
+        this.jdbc     = jdbc;
+        this.sessions = sessions;
+        this.users    = users;
     }
 
     public LocationStateResponse getLocationState(Jwt jwt, Long since) {
         if (since == null) throw new BadRequestException("since_requerido");
 
         User caller = loadCaller(jwt);
-        UserSession session = sessions.findByUserId(caller.id())
+        sessions.findByUserId(caller.id())
                 .orElseThrow(() -> new ForbiddenException("sesion_no_encontrada"));
-        Terminal terminal = terminals.findById(session.terminalId())
-                .orElseThrow(() -> new NotFoundException("terminal_no_encontrado"));
 
-        UUID locationId = terminal.locationId();
+        UUID locationId = caller.locationId();
         long asOf = Instant.now().getEpochSecond();
 
         List<NewSession> newSessions = jdbc.sql("""

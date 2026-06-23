@@ -1,7 +1,5 @@
 package com.cloudcentinel.parkingapp.terminal;
 
-import com.cloudcentinel.parkingapp.location.Location;
-import com.cloudcentinel.parkingapp.location.LocationRepository;
 import com.cloudcentinel.parkingapp.shared.exception.BadRequestException;
 import com.cloudcentinel.parkingapp.shared.exception.ConflictException;
 import com.cloudcentinel.parkingapp.shared.exception.ForbiddenException;
@@ -18,48 +16,29 @@ import java.util.UUID;
 public class TerminalService {
 
     private final TerminalRepository terminals;
-    private final LocationRepository locations;
     private final UserRepository     users;
 
-    public TerminalService(TerminalRepository terminals,
-                           LocationRepository locations,
-                           UserRepository users) {
+    public TerminalService(TerminalRepository terminals, UserRepository users) {
         this.terminals = terminals;
-        this.locations = locations;
         this.users     = users;
     }
 
     public Terminal registerTerminal(CreateTerminalRequest req) {
-        if (req.serialNumber() == null || req.model() == null
-                || req.orgId() == null || req.locationId() == null) {
+        if (req.serialNumber() == null || req.model() == null || req.orgId() == null) {
             throw new BadRequestException("campos_requeridos_faltantes");
         }
         if (terminals.existsBySerialNumber(req.serialNumber())) {
             throw new ConflictException("serial_number_ya_registrado");
         }
-        Location loc = locations.findById(req.locationId())
-                .orElseThrow(() -> new NotFoundException("locacion_no_encontrada"));
-        if (!loc.orgId().equals(req.orgId())) {
-            throw new BadRequestException("location_no_pertenece_a_org");
-        }
-        return terminals.insert(req.serialNumber(), req.model(), req.orgId(),
-                req.locationId(), req.appVersion());
+        return terminals.insert(req.serialNumber(), req.model(), req.orgId(), req.appVersion());
     }
 
-    public List<Terminal> listTerminals(Jwt jwt, UUID orgId, UUID locationId) {
+    public List<Terminal> listTerminals(Jwt jwt, UUID orgId) {
         if (isAdmin(jwt)) {
-            if (locationId != null) return terminals.findByLocationId(locationId);
-            if (orgId      != null) return terminals.findByOrgId(orgId);
-            return terminals.findAll();
+            return orgId != null ? terminals.findByOrgId(orgId) : terminals.findAll();
         }
         UUID callerOrgId = loadCaller(jwt).orgId();
         if (orgId != null && !orgId.equals(callerOrgId)) throw new ForbiddenException("sin_permiso");
-        if (locationId != null) {
-            Location loc = locations.findById(locationId)
-                    .orElseThrow(() -> new NotFoundException("locacion_no_encontrada"));
-            if (!loc.orgId().equals(callerOrgId)) throw new ForbiddenException("sin_permiso");
-            return terminals.findByLocationId(locationId);
-        }
         return terminals.findByOrgId(callerOrgId);
     }
 
@@ -76,17 +55,9 @@ public class TerminalService {
         Terminal t = terminals.findById(id)
                 .orElseThrow(() -> new NotFoundException("terminal_no_encontrado"));
 
-        if (req.locationId() != null) {
-            if ("ONLINE".equals(t.status())) {
-                throw new ConflictException("terminal_online_no_reasignable");
-            }
-            Location loc = locations.findById(req.locationId())
-                    .orElseThrow(() -> new NotFoundException("locacion_no_encontrada"));
-            if (!loc.orgId().equals(t.orgId())) {
-                throw new BadRequestException("location_no_pertenece_a_org");
-            }
-        }
-        terminals.update(id, req.model(), req.locationId(), req.appVersion());
+        if ("ONLINE".equals(t.status())) throw new ConflictException("terminal_online");
+
+        terminals.update(id, req.model(), req.appVersion());
         return terminals.findById(id).orElseThrow();
     }
 
@@ -94,8 +65,6 @@ public class TerminalService {
         Terminal t = terminals.findById(id)
                 .orElseThrow(() -> new NotFoundException("terminal_no_encontrado"));
         if ("ONLINE".equals(t.status())) throw new ConflictException("terminal_online");
-        if (terminals.hasActiveParkingSessions(id))
-            throw new ConflictException("terminal_tiene_sesiones_activas");
         terminals.delete(id);
     }
 

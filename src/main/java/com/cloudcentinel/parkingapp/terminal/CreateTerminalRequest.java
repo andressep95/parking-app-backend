@@ -6,6 +6,5 @@ public record CreateTerminalRequest(
         String serialNumber,
         String model,
         UUID   orgId,
-        UUID   locationId,
         String appVersion
 ) {}

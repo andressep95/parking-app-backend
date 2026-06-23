@@ -80,14 +80,14 @@ public class ParkingSessionService {
                 .filter(s -> s.operatorId().equals(caller.id()) && "ACTIVE".equals(s.status()))
                 .orElseThrow(() -> new ConflictException("sin_turno_activo"));
 
-        if (sessions.hasActivePlateInLocation(req.plate(), terminal.locationId())) {
+        if (sessions.hasActivePlateInLocation(req.plate(), caller.locationId())) {
             throw new ConflictException("vehiculo_ya_ingresado");
         }
 
         vehicles.upsert(req.plate(), req.vehicleType());
 
         Instant entryAt = Instant.ofEpochSecond(req.entryAt());
-        sessions.insert(req.id(), terminal.locationId(), req.plate(), req.vehicleType(),
+        sessions.insert(req.id(), caller.locationId(), req.plate(), req.vehicleType(),
                 entryAt, caller.id(), terminal.id(), shift.id(),
                 req.tariffSnapshot().toJson());
 

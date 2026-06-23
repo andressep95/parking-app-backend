@@ -30,9 +30,8 @@ public class TerminalController {
     @PreAuthorize("hasAnyRole('ADMIN', 'CUSTOMER')")
     public ResponseEntity<List<Terminal>> listTerminals(
             @AuthenticationPrincipal Jwt jwt,
-            @RequestParam(required = false) UUID orgId,
-            @RequestParam(required = false) UUID locationId) {
-        return ResponseEntity.ok(terminalService.listTerminals(jwt, orgId, locationId));
+            @RequestParam(required = false) UUID orgId) {
+        return ResponseEntity.ok(terminalService.listTerminals(jwt, orgId));
     }
 
     @GetMapping("/{id}")

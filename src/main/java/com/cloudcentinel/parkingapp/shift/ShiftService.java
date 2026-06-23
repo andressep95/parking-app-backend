@@ -48,7 +48,7 @@ public class ShiftService {
             throw new ConflictException("operador_ya_tiene_turno_activo");
         });
 
-        return shifts.insert(caller.id(), terminal.id(), terminal.locationId(), req.openingCash());
+        return shifts.insert(caller.id(), terminal.id(), caller.locationId(), req.openingCash());
     }
 
     public Shift closeShift(Jwt jwt, UUID id, CloseShiftRequest req) {

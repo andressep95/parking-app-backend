@@ -34,13 +34,17 @@ public class LocationService {
             throw new BadRequestException("campos_requeridos_faltantes");
         }
         if (req.capacity() < 1) throw new BadRequestException("capacity_invalido");
+        if (req.maxOperators() != null && req.maxOperators() < 0)
+            throw new BadRequestException("max_operators_invalido");
 
         organizations.findById(req.orgId())
                 .orElseThrow(() -> new NotFoundException("organizacion_no_encontrada"));
 
-        String timezone = req.timezone() != null ? req.timezone() : "America/Santiago";
+        String timezone    = req.timezone() != null ? req.timezone() : "America/Santiago";
+        int    maxOperators = req.maxOperators() != null ? req.maxOperators() : 0;
+
         return locations.insert(req.orgId(), req.locationName(), req.address(),
-                req.city(), req.capacity(), timezone);
+                req.city(), req.capacity(), maxOperators, timezone);
     }
 
     public List<Location> listLocations(Jwt jwt, UUID orgId) {
@@ -61,22 +65,30 @@ public class LocationService {
 
     public Location updateLocation(Jwt jwt, UUID id, UpdateLocationRequest req) {
         if (!req.hasAnyField()) throw new BadRequestException("sin_campos_para_actualizar");
-        if (req.capacity() != null && req.capacity() < 1) throw new BadRequestException("capacity_invalido");
+        if (req.capacity() != null && req.capacity() < 1)
+            throw new BadRequestException("capacity_invalido");
+        if (req.maxOperators() != null && req.maxOperators() < 0)
+            throw new BadRequestException("max_operators_invalido");
 
         Location loc = locations.findById(id)
                 .orElseThrow(() -> new NotFoundException("locacion_no_encontrada"));
         assertAccess(jwt, loc.orgId());
 
+        if (req.maxOperators() != null && req.maxOperators() > 0
+                && req.maxOperators() < loc.activeOperatorsCount()) {
+            throw new ConflictException("max_operators_inferior_a_activos");
+        }
+
         locations.update(id, req.locationName(), req.address(), req.city(),
-                req.capacity(), req.timezone());
+                req.capacity(), req.maxOperators(), req.timezone());
         return locations.findById(id).orElseThrow();
     }
 
     public void deleteLocation(UUID id) {
         locations.findById(id)
                 .orElseThrow(() -> new NotFoundException("locacion_no_encontrada"));
-        if (locations.hasTerminals(id))
-            throw new ConflictException("locacion_tiene_terminales");
+        if (locations.hasAssignedOperators(id))
+            throw new ConflictException("locacion_tiene_operadores");
         if (locations.hasActiveParkingSessions(id))
             throw new ConflictException("locacion_tiene_sesiones_activas");
         locations.delete(id);
