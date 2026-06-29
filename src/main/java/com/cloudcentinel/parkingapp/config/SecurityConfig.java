@@ -57,6 +57,8 @@ public class SecurityConfig {
                 .requestMatchers(HttpMethod.POST, "/api/v1/auth/device").permitAll()
                 // Solo existe en perfil local (@Profile("local") en BootstrapController)
                 .requestMatchers(HttpMethod.POST, "/api/v1/auth/bootstrap").permitAll()
+                // Health check público para Dokploy / load balancer
+                .requestMatchers("/actuator/health").permitAll()
                 .anyRequest().authenticated()
             )
             .oauth2ResourceServer(oauth2 -> oauth2
