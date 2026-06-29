@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### [0e1f283] — 2026-06-29
+
+**feat: add /actuator/health endpoint (public)**
+
+#### Changed
+
+- `pom.xml`
+- `src/main/java/com/cloudcentinel/parkingapp/config/SecurityConfig.java`
+- `src/main/resources/application.properties`
+
+---
+
 ### [dd580fd] — 2026-06-22
 
 **feat(domain): decouple terminals from locations, add operator quota**
