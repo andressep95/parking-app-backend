@@ -7,6 +7,9 @@ target/
 .env.*
 !.env.example
 
+# Perfil local con credenciales reales
+src/main/resources/application-local.properties
+
 # IntelliJ IDEA
 .idea/
 *.iml
