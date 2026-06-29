@@ -1,23 +1,27 @@
-# Compiled binaries
-bootstrap
-*/bootstrap
-
-# Local build artifacts
-auth-handler/auth-handler
-user-handler/user-handler
-organization-handler/organization-handler
-
-# Go test cache
-*.test
-
-# macOS
-.DS_Store
-
 # Maven build output
 target/
+!.mvn/wrapper/maven-wrapper.jar
 
-# Local environment — credenciales y configuración sensible
+# Environment — credenciales y configuración sensible
 .env
 .env.*
 !.env.example
 
+# IntelliJ IDEA
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# VS Code
+.vscode/
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
+logs/
+
+# Spring Boot devtools
+spring-devtools.properties

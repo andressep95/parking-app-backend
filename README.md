@@ -15,6 +15,7 @@ Backend central del sistema de gestión de estacionamientos para terminales **TU
 | Base de datos | PostgreSQL 15+ |
 | Acceso a datos | Spring JDBC (`JdbcClient`) |
 | AWS SDK | AWS SDK for Java v2 (`cognitoidentityprovider`) |
+| Despliegue | Docker + Dokploy |
 
 ---
 
@@ -29,10 +30,26 @@ ADMIN  (plataforma)
 | Rol | Canal | Capacidad |
 |---|---|---|
 | `ADMIN` | Web Dashboard | Registrar/suspender CUSTOMERs, ver datos globales |
-| `CUSTOMER` | Web Dashboard | Registrar/suspender sus OPERATORs, ver sus propios datos |
-| `OPERATOR` | POS Android | Ejecutar cobros y registros de vehículos en su terminal asignada |
+| `CUSTOMER` | Web Dashboard | Gestionar sus OPERATORs y locaciones |
+| `OPERATOR` | POS Android | Registrar ingresos/egresos de vehículos en su terminal |
 
-Los roles se gestionan como **grupos Cognito** y viajan en el claim `cognito:groups` del JWT. Spring Security los mapea automáticamente a `ROLE_ADMIN`, `ROLE_CUSTOMER`, `ROLE_OPERATOR`.
+Los roles se gestionan como **grupos Cognito** y viajan en el claim `cognito:groups` del JWT. Spring Security los mapea a `ROLE_ADMIN`, `ROLE_CUSTOMER`, `ROLE_OPERATOR`.
+
+---
+
+## Endpoints
+
+| Módulo | Endpoints |
+|---|---|
+| **Auth** | `POST /auth/device` · `POST /auth/logout` · `DELETE /auth/sessions/{userId}` |
+| **Users** | `POST /users` · `GET /users` · `GET /users/{id}` · `PUT /users/{id}` · `DELETE /users/{id}` · `POST /users/{id}/activate` · `POST /users/{id}/deactivate` · `POST /users/{id}/reset-password` |
+| **Organizations** | `POST /organizations` · `GET /organizations` · `GET /organizations/{id}` · `PUT /organizations/{id}` · `DELETE /organizations/{id}` · `POST /organizations/{id}/activate` · `POST /organizations/{id}/deactivate` |
+| **Locations** | `POST /locations` · `GET /locations` · `GET /locations/{id}` · `PUT /locations/{id}` · `DELETE /locations/{id}` · `POST /locations/{id}/activate` · `POST /locations/{id}/deactivate` |
+| **Terminals** | `POST /terminals` · `GET /terminals` · `GET /terminals/{id}` · `PUT /terminals/{id}` · `DELETE /terminals/{id}` · `POST /terminals/{id}/maintenance` · `POST /terminals/{id}/offline` |
+| **Tariffs** | `POST /tariffs` · `GET /tariffs` · `GET /tariffs/{id}` · `POST /tariffs/{id}/deactivate` |
+| **Shifts** | `POST /shifts` · `POST /shifts/{id}/close` · `GET /shifts` · `GET /shifts/{id}` |
+| **Parking** | `POST /parking-sessions` · `POST /parking-sessions/{id}/checkout` |
+| **POS** | `GET /pos/bootstrap/{serialNumber}` · `GET /pos/location-state` |
 
 ---
 
@@ -46,142 +63,149 @@ src/main/java/com/cloudcentinel/parkingapp/
 │   └── CognitoAdminConfig.java      ← Bean CognitoIdentityProviderClient (AWS SDK v2)
 │
 ├── auth/                            ← Autenticación mediada para POS Android
-│   ├── AuthController.java          POST /auth/device  |  POST /auth/logout
+│   ├── AuthController.java          POST /auth/device · POST /auth/logout · DELETE /auth/sessions/{id}
 │   ├── AuthService.java             Proxy AdminInitiateAuth + enforce sesión única
-│   ├── DeviceLoginRequest.java      record { rut, password, serialNumber }
-│   └── TokenResponse.java           record { accessToken, refreshToken, expiresIn }
+│   ├── BootstrapController.java     Endpoint de bootstrap de configuración inicial
+│   ├── DeviceLoginRequest.java
+│   └── TokenResponse.java
 │
-├── session/                         ← Tabla user_sessions (sesión única por usuario)
-│   ├── SessionRepository.java       Crear / revocar / limpiar sesiones expiradas
-│   └── UserSession.java             record
+├── session/                         ← Tabla user_sessions (sesión única por operador)
+│   ├── SessionRepository.java
+│   └── UserSession.java
 │
 ├── user/                            ← Tabla users + provisionamiento Cognito
-│   ├── UserController.java          CRUD de usuarios por rol
-│   ├── UserService.java             AdminCreateUser + AdminAddUserToGroup + INSERT users
-│   ├── UserRepository.java          JdbcClient queries
-│   └── User.java                    record { id, cognitoSub, rut, email, role, ... }
+│   ├── UserController.java
+│   ├── UserService.java
+│   ├── UserRepository.java
+│   └── User.java
 │
 ├── organization/                    ← Tabla organizations
 │   ├── OrganizationController.java
 │   ├── OrganizationService.java
 │   ├── OrganizationRepository.java
-│   └── Organization.java            record { id, orgName, rutCompany, email, status, ... }
+│   └── Organization.java
 │
-├── location/                        ← Tabla locations (sedes de una organización)
+├── location/                        ← Tabla locations
 │   ├── LocationController.java
 │   ├── LocationService.java
 │   ├── LocationRepository.java
-│   └── Location.java                record { id, orgId, locationName, address, city, ... }
+│   └── Location.java
 │
-├── terminal/                        ← Tabla terminals (binding serial → ubicación)
+├── terminal/                        ← Tabla terminals
 │   ├── TerminalController.java
 │   ├── TerminalService.java
 │   ├── TerminalRepository.java
-│   └── Terminal.java                record { id, serialNumber, locationId, status, ... }
+│   └── Terminal.java
+│
+├── tariff/                          ← Tabla tariffs (inmutables, solo se desactivan)
+│   ├── TariffController.java
+│   ├── TariffService.java           Rotate: desactiva anterior + inserta nueva
+│   ├── TariffRepository.java
+│   └── Tariff.java
 │
 ├── shift/                           ← Tabla shifts (turno activo del operador)
-│   ├── ShiftController.java         Abrir / cerrar turno
-│   ├── ShiftService.java            Garantiza un único turno ACTIVE por operador
+│   ├── ShiftController.java
+│   ├── ShiftService.java
 │   ├── ShiftRepository.java
-│   └── Shift.java                   record { id, operatorId, terminalId, status, ... }
+│   └── Shift.java
 │
 ├── parking/                         ← Tabla parking_sessions
-│   ├── ParkingController.java       Entrada / salida de vehículo, sesiones activas
-│   ├── ParkingService.java          Cálculo de tarifa + snapshot en JSONB
-│   ├── ParkingRepository.java
-│   └── ParkingSession.java          record { id, plate, vehicleType, status, tariffSnapshot, ... }
-│
-├── tariff/                          ← Tabla tariffs (historial de tarifas por sede)
-│   ├── TariffController.java
-│   ├── TariffService.java           Rotate: desactiva tarifa anterior + inserta nueva
-│   ├── TariffRepository.java
-│   └── Tariff.java                  record { id, locationId, vehicleType, pricePerHour, isActive, ... }
+│   ├── ParkingSessionController.java
+│   ├── ParkingSessionService.java   Idempotencia por UUID del POS + tariff snapshot
+│   ├── ParkingSessionRepository.java
+│   └── TariffSnapshot.java          JSONB snapshot de tarifa al momento del ingreso
 │
 ├── transaction/                     ← Tabla transactions (1:1 con parking_session)
-│   ├── TransactionController.java
-│   ├── TransactionService.java
-│   ├── TransactionRepository.java
-│   └── Transaction.java             record { id, parkingSessionId, amount, paymentMethod, ... }
+│   └── TransactionRepository.java
 │
-├── audit/                           ← Tabla audit_logs (inmutable, sin endpoint propio)
-│   ├── AuditService.java            Llamado internamente por otros Services
-│   ├── AuditRepository.java
-│   └── AuditLog.java                record { userId, action, entity, entityId, details, ... }
+├── vehicle/                         ← Tabla vehicles (upsert por placa)
+│   └── VehicleRepository.java
+│
+├── pos/                             ← Endpoints exclusivos del POS Android
+│   ├── PosController.java           GET /pos/bootstrap/{sn} · GET /pos/location-state
+│   ├── PosBootstrapService.java     Vista desnormalizada para carga inicial offline
+│   ├── PosLocationStateService.java Delta polling multi-terminal
+│   ├── BootstrapResponse.java
+│   └── LocationStateResponse.java
 │
 └── shared/
     ├── cognito/
-    │   └── CognitoAdminClient.java  ← Wrapper de operaciones admin AWS:
-    │                                    AdminCreateUser / AdminSetUserPassword
-    │                                    AdminAddUserToGroup / AdminUserGlobalSignOut
+    │   ├── CognitoAdminClient.java  ← Wrapper de operaciones admin AWS Cognito
+    │   └── JwtUtils.java
+    ├── rut/
+    │   └── RutUtils.java            ← Validación RUT chileno (módulo 11)
     └── exception/
-        ├── GlobalExceptionHandler.java  @RestControllerAdvice → RFC 7807 Problem Details
+        ├── GlobalExceptionHandler.java
         ├── NotFoundException.java
         ├── ConflictException.java
-        └── ForbiddenException.java
+        ├── ForbiddenException.java
+        ├── BadRequestException.java
+        └── UnauthorizedException.java
 ```
-
-### Decisiones de diseño
-
-| Decisión | Motivo |
-|---|---|
-| **Vertical slices** — un paquete por dominio | Cada feature tiene su propio controller, service, repository y record. Evita el acoplamiento horizontal de capas genéricas. |
-| **`session/` separado de `auth/`** | `SessionRepository` lo usan `auth/` (crear sesión) y futuros endpoints de heartbeat/logout. No pertenece a ninguno de los dos exclusivamente. |
-| **`audit/` sin controller** | `AuditService` es llamado internamente por otros `@Service`. Nunca se expone como endpoint directo; los logs son inmutables. |
-| **`shared/cognito/CognitoAdminClient`** | Centraliza toda interacción con el AWS SDK. Ningún `@Service` importa el SDK directamente; facilita pruebas con mock del wrapper. |
-| **Records Java 21** | Modelos inmutables y sin boilerplate para entidades de dominio y DTOs. |
-
----
-
-## Implementaciones de referencia (`lambdas/`)
-
-El directorio `lambdas/` contiene las implementaciones previas escritas en **Go** para AWS Lambda + DynamoDB. Están técnicamente completas y funcionan como referencia directa para portar la lógica al stack Spring Boot + PostgreSQL.
-
-| Lambda | Contenido | Equivalente Spring |
-|---|---|---|
-| `auth-handler/` | Login con RUT + serial binding, registro individual y por lote (Excel), logout, cierre remoto de sesión | `auth/` + `session/` |
-| `user-handler/` | CRUD de usuarios, cambio de estado, reset de contraseña, listado por org | `user/` |
-| `organization-handler/` | CRUD de organizaciones, cambio de estado | `organization/` |
-
-> Al portar cada handler, reemplazar:
-> - Queries DynamoDB (`QueryInput`, `GetItemInput`, `TransactWriteItems`) → `JdbcClient` con SQL parametrizado
-> - `AdminInitiateAuth` (flujo `USER_PASSWORD_AUTH`) → se mantiene igual vía `CognitoAdminClient`
-> - `TTL` de sesión → columna `expires_at` + limpieza lazy en cada login
 
 ---
 
 ## Configuración
 
-### `application.properties`
+Copia `.env.example` a `.env` y completa los valores:
+
+```bash
+cp .env.example .env
+```
+
+Variables requeridas:
 
 ```properties
 # PostgreSQL
-spring.datasource.url=jdbc:postgresql://localhost:5432/parking_app
-spring.datasource.username=${DB_USERNAME}
-spring.datasource.password=${DB_PASSWORD}
+DB_URL=jdbc:postgresql://localhost:5432/parking_app
+DB_USERNAME=
+DB_PASSWORD=
 
 # AWS Cognito
-spring.security.oauth2.resourceserver.jwt.issuer-uri=https://cognito-idp.us-east-1.amazonaws.com/us-east-1_5Hq8VEHuN
-spring.security.oauth2.resourceserver.jwt.jwk-set-uri=https://cognito-idp.us-east-1.amazonaws.com/us-east-1_5Hq8VEHuN/.well-known/jwks.json
-aws.cognito.client-id=1d2sil9s35rb6b6t02c647co98
-aws.cognito.user-pool-id=us-east-1_5Hq8VEHuN
+AWS_REGION=us-east-1
+AWS_ACCESS_KEY_ID=
+AWS_SECRET_ACCESS_KEY=
+COGNITO_USER_POOL_ID=
+COGNITO_CLIENT_ID=
 ```
-
-Las credenciales de AWS (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`) se inyectan como variables de entorno; el SDK v2 las detecta automáticamente via `DefaultCredentialsProvider`.
 
 ---
 
-## Comandos
+## Desarrollo local
 
 ```bash
-# Compilar
-./mvnw compile
+# Levantar PostgreSQL con datos de prueba
+docker-compose up -d
 
-# Ejecutar tests
-./mvnw test
+# Ejecutar la app (perfil local)
+./mvnw spring-boot:run -Dspring-boot.run.profiles=local
 
 # Build (JAR ejecutable)
 ./mvnw package -DskipTests
+```
 
-# Levantar en local
-./mvnw spring-boot:run
+El perfil `local` usa `application-local.properties` y apunta a la BD del `docker-compose`.
+
+---
+
+## Documentación
+
+Las historias de usuario con criterios de aceptación, diagramas de secuencia y contratos de API están en:
+
+```
+docs/user-stories/
+├── US-001-login-operador-pos.md
+├── US-002-logout-operador.md
+├── US-003-cierre-sesion-admin.md
+├── US-004-registro-usuario.md
+├── US-005-crud-usuarios.md
+├── US-006-crud-organizaciones.md
+├── US-007-crud-locaciones.md
+├── US-008-crud-terminales.md
+├── US-009-gestion-tarifas.md
+├── US-010-bootstrap-pos.md
+├── US-011-gestion-turno.md
+├── US-012-ingreso-vehiculo.md
+├── US-013-cobro-salida.md
+└── US-014-estado-locacion.md
 ```
