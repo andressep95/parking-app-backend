@@ -104,12 +104,11 @@ VALUES (
 -- 6. Terminal en estado ONLINE ------------------------------------------------
 -- serialNumber: "TUU-TEST-001" — usar este valor en el campo serialNumber del login
 
-INSERT INTO terminals (id, serial_number, model, org_id, location_id, status)
+INSERT INTO terminals (id, serial_number, model, org_id, status)
 VALUES (
     'ffffffff-ffff-ffff-ffff-ffffffffffff',
     'TUU-TEST-001',
     'TUU S1',
     'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
-    'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
     'ONLINE'
 );
