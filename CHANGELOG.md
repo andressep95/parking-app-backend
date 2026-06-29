@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### [bca4389] — 2026-06-29
+
+**fix(docker): align seed and remove stale schema**
+
+> what: Removes location_id from terminals seed insert and deletes outdated docs/schema.sql
+> why: terminals table has no location_id column; docs/schema.sql was out of sync with the authoritative docker/init/01_schema.sql
+> breaking: false
+
+#### Changed
+
+- `docker/init/02_seed.sql`
+
+#### Removed
+
+- `docs/schema.sql`
+
+---
+
 ### [0e1f283] — 2026-06-29
 
 **feat: add /actuator/health endpoint (public)**
