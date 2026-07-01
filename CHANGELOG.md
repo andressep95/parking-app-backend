@@ -6,6 +6,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### [22b4177] — 2026-06-30
+
+**feat(tariff): implement dynamic three-type tariff model**
+
+> what: Replaces single price-per-hour tariff with three exclusive types
+> — PER_MINUTE (grace period + max cap), BRACKET (tiered per-minute
+> rates with tariff_brackets table), and FLAT_ENTRY (fixed charge on
+> entry); adds TariffBracket, TariffType, updated bootstrap and
+
+#### Added
+
+- `docker/init/02_migrate_tariffs.sql`
+- `src/main/java/com/cloudcentinel/parkingapp/tariff/TariffBracket.java`
+- `src/main/java/com/cloudcentinel/parkingapp/tariff/TariffType.java`
+
+#### Changed
+
+- `docker/init/01_schema.sql`
+- `docs/user-stories/US-009-gestion-tarifas.md`
+- `src/main/java/com/cloudcentinel/parkingapp/parking/TariffSnapshot.java`
+- `src/main/java/com/cloudcentinel/parkingapp/pos/BootstrapResponse.java`
+- `src/main/java/com/cloudcentinel/parkingapp/pos/PosBootstrapService.java`
+- `src/main/java/com/cloudcentinel/parkingapp/tariff/CreateTariffRequest.java`
+- `src/main/java/com/cloudcentinel/parkingapp/tariff/Tariff.java`
+- `src/main/java/com/cloudcentinel/parkingapp/tariff/TariffRepository.java`
+- `src/main/java/com/cloudcentinel/parkingapp/tariff/TariffService.java`
+
+---
+
 ### [bca4389] — 2026-06-29
 
 **fix(docker): align seed and remove stale schema**
