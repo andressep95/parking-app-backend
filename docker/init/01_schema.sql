@@ -14,6 +14,7 @@ CREATE TYPE vehicle_type    AS ENUM ('CAR', 'MOTORCYCLE', 'PICKUP', 'BUS');
 CREATE TYPE shift_status    AS ENUM ('ACTIVE', 'CLOSED');
 CREATE TYPE parking_status  AS ENUM ('ACTIVE', 'COMPLETED', 'CANCELLED');
 CREATE TYPE payment_method  AS ENUM ('TUU_CARD', 'TUU_CASH', 'TUU_TRANSFER');
+CREATE TYPE tariff_type     AS ENUM ('PER_MINUTE', 'BRACKET', 'FLAT_ENTRY');
 
 -- 1. organizations ------------------------------------------------------------
 
@@ -111,22 +112,54 @@ ALTER TABLE user_sessions
 -- 6. tariffs ------------------------------------------------------------------
 
 CREATE TABLE tariffs (
-    id             UUID          PRIMARY KEY DEFAULT gen_random_uuid(),
-    location_id    UUID          NOT NULL REFERENCES locations(id) ON DELETE RESTRICT,
-    vehicle_type   vehicle_type  NOT NULL,
-    name           VARCHAR(255),
-    price_per_hour NUMERIC(10,2) NOT NULL CHECK (price_per_hour >= 0),
-    minimum_charge NUMERIC(10,2) NOT NULL DEFAULT 0 CHECK (minimum_charge >= 0),
-    grace_minutes  INTEGER       NOT NULL DEFAULT 0 CHECK (grace_minutes >= 0),
-    is_active      BOOLEAN       NOT NULL DEFAULT TRUE,
-    valid_from     TIMESTAMPTZ   NOT NULL DEFAULT now(),
-    valid_until    TIMESTAMPTZ
+    id               UUID          PRIMARY KEY DEFAULT gen_random_uuid(),
+    location_id      UUID          NOT NULL REFERENCES locations(id) ON DELETE RESTRICT,
+    vehicle_type     vehicle_type  NOT NULL,
+    tariff_type      tariff_type   NOT NULL,
+    name             VARCHAR(255),
+
+    -- PER_MINUTE: costo por minuto
+    price_per_minute NUMERIC(10,4) CHECK (price_per_minute IS NULL OR price_per_minute >= 0),
+
+    -- PER_MINUTE + BRACKET: minutos sin cobro al inicio
+    grace_minutes    INTEGER       NOT NULL DEFAULT 0 CHECK (grace_minutes >= 0),
+
+    -- PER_MINUTE + BRACKET: tope máximo de cobro acumulado (null = sin tope)
+    max_charge       NUMERIC(10,2) CHECK (max_charge IS NULL OR max_charge >= 0),
+
+    -- FLAT_ENTRY: monto fijo cobrado al ingreso
+    flat_amount      NUMERIC(10,2) CHECK (flat_amount IS NULL OR flat_amount >= 0),
+
+    is_active        BOOLEAN       NOT NULL DEFAULT TRUE,
+    valid_from       TIMESTAMPTZ   NOT NULL DEFAULT now(),
+    valid_until      TIMESTAMPTZ,
+
+    CONSTRAINT chk_per_minute_has_rate
+        CHECK (tariff_type != 'PER_MINUTE' OR price_per_minute IS NOT NULL),
+    CONSTRAINT chk_flat_entry_has_amount
+        CHECK (tariff_type != 'FLAT_ENTRY' OR flat_amount IS NOT NULL)
 );
 
 CREATE UNIQUE INDEX idx_tariffs_active_unique
     ON tariffs(location_id, vehicle_type) WHERE is_active = TRUE;
 
 CREATE INDEX idx_tariffs_location_id ON tariffs(location_id);
+
+-- 6b. tariff_brackets (solo para tariff_type = 'BRACKET') --------------------
+
+CREATE TABLE tariff_brackets (
+    id               UUID          PRIMARY KEY DEFAULT gen_random_uuid(),
+    tariff_id        UUID          NOT NULL REFERENCES tariffs(id) ON DELETE CASCADE,
+    position         SMALLINT      NOT NULL CHECK (position >= 1),
+    from_minute      INTEGER       NOT NULL CHECK (from_minute >= 0),
+    to_minute        INTEGER       CHECK (to_minute IS NULL OR to_minute > from_minute),
+    price_per_minute NUMERIC(10,4) NOT NULL CHECK (price_per_minute >= 0),
+
+    CONSTRAINT uq_tariff_bracket_position UNIQUE (tariff_id, position),
+    CONSTRAINT uq_tariff_bracket_from     UNIQUE (tariff_id, from_minute)
+);
+
+CREATE INDEX idx_tariff_brackets_tariff_id ON tariff_brackets(tariff_id, position);
 
 -- 7. vehicles -----------------------------------------------------------------
 

@@ -116,9 +116,9 @@ public class PosBootstrapService {
     }
 
     private List<BootstrapTariff> loadActiveTariffs(UUID locationId) {
-        return jdbc.sql("""
-                SELECT id, vehicle_type::text, name,
-                       price_per_hour, minimum_charge, grace_minutes
+        List<BootstrapTariff> rows = jdbc.sql("""
+                SELECT id, vehicle_type::text, tariff_type::text, name,
+                       price_per_minute, grace_minutes, max_charge, flat_amount
                 FROM tariffs
                 WHERE location_id = :locationId AND is_active = true
                 ORDER BY vehicle_type
@@ -128,9 +128,37 @@ public class PosBootstrapService {
                         UUID.fromString(rs.getString("id")),
                         rs.getString("vehicle_type"),
                         rs.getString("name"),
-                        rs.getBigDecimal("price_per_hour"),
-                        rs.getBigDecimal("minimum_charge"),
-                        rs.getInt("grace_minutes")
+                        rs.getString("tariff_type"),
+                        rs.getBigDecimal("price_per_minute"),
+                        rs.getInt("grace_minutes"),
+                        rs.getBigDecimal("max_charge"),
+                        rs.getBigDecimal("flat_amount"),
+                        null
+                ))
+                .list();
+
+        return rows.stream()
+                .map(t -> {
+                    if (!"BRACKET".equals(t.tariffType())) return t;
+                    List<BootstrapTariff.BootstrapBracket> brackets = loadBracketsForTariff(t.id());
+                    return new BootstrapTariff(t.id(), t.vehicleType(), t.name(), t.tariffType(),
+                            t.pricePerMinute(), t.graceMinutes(), t.maxCharge(), t.flatAmount(),
+                            brackets);
+                })
+                .toList();
+    }
+
+    private List<BootstrapTariff.BootstrapBracket> loadBracketsForTariff(UUID tariffId) {
+        return jdbc.sql("""
+                SELECT position, from_minute, to_minute, price_per_minute
+                FROM tariff_brackets WHERE tariff_id = :tariffId ORDER BY position
+                """)
+                .param("tariffId", tariffId)
+                .query((rs, rn) -> new BootstrapTariff.BootstrapBracket(
+                        rs.getInt("position"),
+                        rs.getInt("from_minute"),
+                        rs.getObject("to_minute", Integer.class),
+                        rs.getBigDecimal("price_per_minute")
                 ))
                 .list();
     }

@@ -20,9 +20,24 @@ public record BootstrapResponse(
     public record BootstrapLocation(UUID id, String name, String address,
                                     String city, String timezone, int capacity) {}
 
-    public record BootstrapTariff(UUID id, String vehicleType, String name,
-                                  BigDecimal pricePerHour, BigDecimal minimumCharge,
-                                  int graceMinutes) {}
+    public record BootstrapTariff(
+            UUID                  id,
+            String                vehicleType,
+            String                name,
+            String                tariffType,
+            BigDecimal            pricePerMinute,
+            int                   graceMinutes,
+            BigDecimal            maxCharge,
+            BigDecimal            flatAmount,
+            List<BootstrapBracket> brackets
+    ) {
+        public record BootstrapBracket(
+                int        position,
+                int        fromMinute,
+                Integer    toMinute,
+                BigDecimal pricePerMinute
+        ) {}
+    }
 
     public record BootstrapSession(UUID id, String plate, String vehicleType,
                                    long entryAt, String operatorName) {}

@@ -13,6 +13,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
@@ -22,6 +23,8 @@ public class TariffService {
 
     private static final Set<String> VALID_VEHICLE_TYPES =
             Set.of("CAR", "MOTORCYCLE", "PICKUP", "BUS");
+    private static final Set<String> VALID_TARIFF_TYPES =
+            Set.of("PER_MINUTE", "BRACKET", "FLAT_ENTRY");
 
     private final TariffRepository   tariffs;
     private final LocationRepository locations;
@@ -37,13 +40,19 @@ public class TariffService {
 
     @Transactional
     public Tariff createTariff(Jwt jwt, CreateTariffRequest req) {
-        if (req.locationId() == null || req.vehicleType() == null || req.pricePerHour() == null) {
+        if (req.locationId() == null || req.vehicleType() == null || req.tariffType() == null) {
             throw new BadRequestException("campos_requeridos_faltantes");
         }
         if (!VALID_VEHICLE_TYPES.contains(req.vehicleType())) {
             throw new BadRequestException("vehicle_type_invalido");
         }
-        if (req.pricePerHour().compareTo(BigDecimal.ZERO) < 0) {
+        if (!VALID_TARIFF_TYPES.contains(req.tariffType())) {
+            throw new BadRequestException("tariff_type_invalido");
+        }
+
+        validateByType(req);
+
+        if (req.maxCharge() != null && req.maxCharge().compareTo(BigDecimal.ZERO) < 0) {
             throw new BadRequestException("precio_invalido");
         }
 
@@ -53,11 +62,7 @@ public class TariffService {
 
         tariffs.deactivatePrevious(req.locationId(), req.vehicleType());
 
-        BigDecimal minimumCharge = req.minimumCharge() != null ? req.minimumCharge() : BigDecimal.ZERO;
-        int graceMinutes = req.graceMinutes() != null ? req.graceMinutes() : 0;
-
-        return tariffs.insert(req.locationId(), req.vehicleType(), req.name(),
-                req.pricePerHour(), minimumCharge, graceMinutes);
+        return tariffs.insert(req.locationId(), req);
     }
 
     public List<Tariff> listTariffs(Jwt jwt, UUID locationId, Boolean active) {
@@ -90,6 +95,57 @@ public class TariffService {
 
         tariffs.deactivate(id);
         return tariffs.findById(id).orElseThrow();
+    }
+
+    private void validateByType(CreateTariffRequest req) {
+        switch (req.tariffType()) {
+            case "PER_MINUTE" -> {
+                if (req.pricePerMinute() == null)
+                    throw new BadRequestException("campos_requeridos_faltantes");
+                if (req.pricePerMinute().compareTo(BigDecimal.ZERO) < 0)
+                    throw new BadRequestException("precio_invalido");
+            }
+            case "BRACKET" -> {
+                if (req.brackets() == null || req.brackets().isEmpty())
+                    throw new BadRequestException("tramos_requeridos");
+                validateBrackets(req.brackets());
+            }
+            case "FLAT_ENTRY" -> {
+                if (req.flatAmount() == null)
+                    throw new BadRequestException("campos_requeridos_faltantes");
+                if (req.flatAmount().compareTo(BigDecimal.ZERO) < 0)
+                    throw new BadRequestException("precio_invalido");
+            }
+        }
+    }
+
+    private void validateBrackets(List<CreateTariffRequest.BracketRequest> brackets) {
+        for (CreateTariffRequest.BracketRequest br : brackets) {
+            if (br.position() == null || br.fromMinute() == null || br.pricePerMinute() == null) {
+                throw new BadRequestException("tramo_invalido");
+            }
+            if (br.fromMinute() < 0 || br.pricePerMinute().compareTo(BigDecimal.ZERO) < 0) {
+                throw new BadRequestException("tramo_invalido");
+            }
+            if (br.toMinute() != null && br.toMinute() <= br.fromMinute()) {
+                throw new BadRequestException("tramo_invalido");
+            }
+        }
+
+        List<CreateTariffRequest.BracketRequest> sorted = brackets.stream()
+                .sorted(Comparator.comparingInt(CreateTariffRequest.BracketRequest::fromMinute))
+                .toList();
+
+        for (int i = 0; i < sorted.size() - 1; i++) {
+            CreateTariffRequest.BracketRequest curr = sorted.get(i);
+            CreateTariffRequest.BracketRequest next = sorted.get(i + 1);
+            if (curr.toMinute() == null) {
+                throw new BadRequestException("tramos_solapados");
+            }
+            if (next.fromMinute() < curr.toMinute()) {
+                throw new BadRequestException("tramos_solapados");
+            }
+        }
     }
 
     private void assertAccess(Jwt jwt, UUID locationOrgId) {
