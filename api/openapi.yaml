@@ -1,0 +1,2288 @@
+openapi: "3.1.0"
+
+info:
+  title: Parking App Backend API
+  version: "1.0.0"
+  description: |
+    API REST del sistema de gestión de estacionamientos para terminales **TUU Haulmer**.
+    Sirve tanto al cliente nativo Android (POS) como al panel web (Dashboard).
+    Actúa como proxy de autenticación hacia AWS Cognito y como única fuente de verdad de identidad.
+
+    ## Jerarquía de Roles
+
+    | Rol        | Canal           | Capacidad                                               |
+    |------------|-----------------|---------------------------------------------------------|
+    | `ADMIN`    | Web Dashboard   | Registrar/suspender CUSTOMERs, ver datos globales       |
+    | `CUSTOMER` | Web Dashboard   | Gestionar sus OPERATORs y locaciones                    |
+    | `OPERATOR` | POS Android     | Registrar ingresos/egresos de vehículos en su terminal  |
+
+    Los roles viajan en el claim `cognito:groups` del JWT y se mapean a
+    `ROLE_ADMIN`, `ROLE_CUSTOMER`, `ROLE_OPERATOR` en Spring Security.
+
+    ## Errores
+
+    Todos los errores siguen el formato RFC 7807 (`application/problem+json`):
+    ```json
+    {
+      "type":   "about:blank",
+      "title":  "Not Found",
+      "status": 404,
+      "detail": "usuario_no_encontrado"
+    }
+    ```
+
+servers:
+  - url: http://localhost:8080
+    description: Desarrollo local
+
+tags:
+  - name: auth
+    description: Autenticación y gestión de sesiones para terminales POS
+  - name: users
+    description: Gestión de usuarios de la plataforma
+  - name: organizations
+    description: Gestión de organizaciones (empresas dueñas de estacionamientos)
+  - name: locations
+    description: Gestión de locaciones (estacionamientos físicos)
+  - name: terminals
+    description: Gestión de terminales POS TUU
+  - name: tariffs
+    description: Gestión de tarifas por locación (inmutables, solo se desactivan)
+  - name: shifts
+    description: Gestión de turnos de operadores
+  - name: parking
+    description: Registro de sesiones de estacionamiento (ingresos y egresos)
+  - name: pos
+    description: Endpoints exclusivos del POS Android (bootstrap y estado de locación)
+
+security:
+  - bearerAuth: []
+
+paths:
+
+  # ─────────────────────────────────────────────
+  # AUTH
+  # ─────────────────────────────────────────────
+
+  /auth/device:
+    post:
+      operationId: deviceLogin
+      summary: Login mediado para terminales POS Android
+      description: |
+        El POS envía RUT, contraseña y número de serie. El backend valida que el terminal
+        exista y esté `ONLINE`, autentica contra Cognito y registra la sesión activa.
+        Devuelve los tres tokens de Cognito (`access`, `refresh`, `id`).
+
+        - Solo acepta usuarios con rol `OPERATOR`.
+        - Usuarios `ADMIN` o `CUSTOMER` son rechazados inmediatamente.
+        - Si el operador ya tiene una sesión activa, el login es rechazado.
+        - **No requiere JWT previo** (permit all).
+      tags: [auth]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeviceLoginRequest'
+      responses:
+        '200':
+          description: Login exitoso. Devuelve los tokens de Cognito.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /auth/logout:
+    post:
+      operationId: logout
+      summary: Cierra la sesión del operador autenticado
+      description: |
+        Invalida el refresh token en Cognito y elimina la fila de `user_sessions`.
+        El JWT del caller se extrae del header `Authorization: Bearer <token>`.
+        Requiere JWT válido.
+      tags: [auth]
+      responses:
+        '204':
+          description: Sesión cerrada exitosamente.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/sessions/{userId}:
+    delete:
+      operationId: adminCloseSession
+      summary: Fuerza el cierre de sesión de cualquier usuario (solo ADMIN)
+      description: |
+        Cierre remoto de sesión. Invalida todos los tokens del usuario en Cognito
+        y elimina su fila de `user_sessions`.
+        Requiere rol `ADMIN`.
+      tags: [auth]
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      responses:
+        '204':
+          description: Sesión revocada exitosamente.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ─────────────────────────────────────────────
+  # USERS
+  # ─────────────────────────────────────────────
+
+  /users:
+    post:
+      operationId: createUser
+      summary: Crea un nuevo usuario en Cognito y en la base de datos
+      description: |
+        Provisiona el usuario en el Cognito User Pool y lo inserta en la tabla `users`.
+        - `ADMIN` puede crear usuarios de cualquier rol.
+        - `CUSTOMER` solo puede crear `OPERATOR` dentro de su propia organización.
+
+        Requiere rol `ADMIN` o `CUSTOMER`.
+      tags: [users]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateUserRequest'
+      responses:
+        '201':
+          description: Usuario creado exitosamente.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+    get:
+      operationId: listUsers
+      summary: Lista usuarios de la plataforma
+      description: |
+        - `ADMIN` ve todos los usuarios. Se puede filtrar por `orgId`.
+        - `CUSTOMER` solo ve los usuarios de su propia organización.
+
+        Requiere rol `ADMIN` o `CUSTOMER`.
+      tags: [users]
+      parameters:
+        - name: orgId
+          in: query
+          description: Filtra usuarios por organización (UUID).
+          required: false
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Lista de usuarios.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/UserResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /users/{id}:
+    get:
+      operationId: getUser
+      summary: Obtiene un usuario por ID
+      description: |
+        Devuelve los datos de un usuario específico.
+        El acceso está restringido según el rol del caller (aislamiento de tenant).
+      tags: [users]
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      responses:
+        '200':
+          description: Datos del usuario.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    put:
+      operationId: updateUser
+      summary: Actualiza datos de un usuario
+      description: |
+        Actualiza los campos editables de un usuario. Solo se actualizan los campos
+        presentes (no nulos) en el cuerpo de la petición.
+        El acceso está restringido según el rol del caller.
+      tags: [users]
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateUserRequest'
+      responses:
+        '200':
+          description: Usuario actualizado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      operationId: deleteUser
+      summary: Elimina un usuario (solo ADMIN)
+      description: |
+        Elimina el usuario de Cognito y de la tabla `users`.
+        Requiere rol `ADMIN`.
+      tags: [users]
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      responses:
+        '200':
+          description: Usuario eliminado.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /users/{id}/activate:
+    post:
+      operationId: activateUser
+      summary: Activa un usuario
+      description: |
+        Cambia el estado del usuario a `ACTIVE` y lo habilita en Cognito.
+        Requiere rol `ADMIN` o `CUSTOMER`.
+      tags: [users]
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      responses:
+        '200':
+          description: Estado actualizado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserStatusResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /users/{id}/deactivate:
+    post:
+      operationId: deactivateUser
+      summary: Desactiva un usuario
+      description: |
+        Cambia el estado del usuario a `INACTIVE` y lo deshabilita en Cognito.
+        Requiere rol `ADMIN` o `CUSTOMER`.
+      tags: [users]
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      responses:
+        '200':
+          description: Estado actualizado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserStatusResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /users/{id}/reset-password:
+    post:
+      operationId: resetPassword
+      summary: Restablece la contraseña de un usuario (solo ADMIN)
+      description: |
+        Fuerza el cambio de contraseña del usuario en Cognito.
+        Requiere rol `ADMIN`.
+      tags: [users]
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResetPasswordRequest'
+      responses:
+        '200':
+          description: Contraseña restablecida.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ─────────────────────────────────────────────
+  # ORGANIZATIONS
+  # ─────────────────────────────────────────────
+
+  /organizations:
+    post:
+      operationId: createOrganization
+      summary: Crea una nueva organización (solo ADMIN)
+      description: |
+        Registra una empresa propietaria de estacionamientos en la plataforma.
+        Requiere rol `ADMIN`.
+      tags: [organizations]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateOrganizationRequest'
+      responses:
+        '201':
+          description: Organización creada.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Organization'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+    get:
+      operationId: listOrganizations
+      summary: Lista todas las organizaciones (solo ADMIN)
+      description: Devuelve el listado completo de organizaciones registradas. Requiere rol `ADMIN`.
+      tags: [organizations]
+      responses:
+        '200':
+          description: Lista de organizaciones.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Organization'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /organizations/{id}:
+    get:
+      operationId: getOrganization
+      summary: Obtiene una organización por ID
+      description: |
+        - `ADMIN` puede acceder a cualquier organización.
+        - `CUSTOMER` solo puede acceder a su propia organización.
+
+        Requiere rol `ADMIN` o `CUSTOMER`.
+      tags: [organizations]
+      parameters:
+        - $ref: '#/components/parameters/ResourceId'
+      responses:
+        '200':
+          description: Datos de la organización.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Organization'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    put:
+      operationId: updateOrganization
+      summary: Actualiza una organización
+      description: |
+        Actualiza los campos editables de una organización.
+        - `ADMIN` puede actualizar cualquier organización.
+        - `CUSTOMER` solo puede actualizar su propia organización.
+
+        Requiere rol `ADMIN` o `CUSTOMER`.
+      tags: [organizations]
+      parameters:
+        - $ref: '#/components/parameters/ResourceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateOrganizationRequest'
+      responses:
+        '200':
+          description: Organización actualizada.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Organization'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      operationId: deleteOrganization
+      summary: Elimina una organización (solo ADMIN)
+      description: Elimina permanentemente una organización. Requiere rol `ADMIN`.
+      tags: [organizations]
+      parameters:
+        - $ref: '#/components/parameters/ResourceId'
+      responses:
+        '200':
+          description: Organización eliminada.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /organizations/{id}/activate:
+    post:
+      operationId: activateOrganization
+      summary: Activa una organización (solo ADMIN)
+      description: Cambia el estado de la organización a `ACTIVE`. Requiere rol `ADMIN`.
+      tags: [organizations]
+      parameters:
+        - $ref: '#/components/parameters/ResourceId'
+      responses:
+        '200':
+          description: Estado actualizado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrgStatusResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /organizations/{id}/deactivate:
+    post:
+      operationId: deactivateOrganization
+      summary: Desactiva una organización (solo ADMIN)
+      description: Cambia el estado de la organización a `INACTIVE`. Requiere rol `ADMIN`.
+      tags: [organizations]
+      parameters:
+        - $ref: '#/components/parameters/ResourceId'
+      responses:
+        '200':
+          description: Estado actualizado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrgStatusResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ─────────────────────────────────────────────
+  # LOCATIONS
+  # ─────────────────────────────────────────────
+
+  /locations:
+    post:
+      operationId: createLocation
+      summary: Crea una nueva locación (solo ADMIN)
+      description: |
+        Registra un estacionamiento físico asociado a una organización.
+        Requiere rol `ADMIN`.
+      tags: [locations]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateLocationRequest'
+      responses:
+        '201':
+          description: Locación creada.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Location'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+    get:
+      operationId: listLocations
+      summary: Lista locaciones
+      description: |
+        - `ADMIN` puede listar todas o filtrar por `orgId`.
+        - `CUSTOMER` solo ve las locaciones de su organización.
+
+        Requiere rol `ADMIN` o `CUSTOMER`.
+      tags: [locations]
+      parameters:
+        - name: orgId
+          in: query
+          description: Filtra locaciones por organización.
+          required: false
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Lista de locaciones.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Location'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /locations/{id}:
+    get:
+      operationId: getLocation
+      summary: Obtiene una locación por ID
+      description: |
+        - `ADMIN` puede acceder a cualquier locación.
+        - `CUSTOMER` solo puede acceder a locaciones de su organización.
+
+        Requiere rol `ADMIN` o `CUSTOMER`.
+      tags: [locations]
+      parameters:
+        - $ref: '#/components/parameters/ResourceId'
+      responses:
+        '200':
+          description: Datos de la locación.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Location'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    put:
+      operationId: updateLocation
+      summary: Actualiza una locación
+      description: |
+        Actualiza los campos editables de una locación. Solo se aplican los campos no nulos.
+        Requiere rol `ADMIN` o `CUSTOMER` (solo su propia organización).
+      tags: [locations]
+      parameters:
+        - $ref: '#/components/parameters/ResourceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateLocationRequest'
+      responses:
+        '200':
+          description: Locación actualizada.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Location'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      operationId: deleteLocation
+      summary: Elimina una locación (solo ADMIN)
+      description: Elimina permanentemente una locación. Requiere rol `ADMIN`.
+      tags: [locations]
+      parameters:
+        - $ref: '#/components/parameters/ResourceId'
+      responses:
+        '200':
+          description: Locación eliminada.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /locations/{id}/activate:
+    post:
+      operationId: activateLocation
+      summary: Activa una locación
+      description: Cambia el estado de la locación a `ACTIVE`. Requiere rol `ADMIN` o `CUSTOMER`.
+      tags: [locations]
+      parameters:
+        - $ref: '#/components/parameters/ResourceId'
+      responses:
+        '200':
+          description: Estado actualizado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LocationStatusResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /locations/{id}/deactivate:
+    post:
+      operationId: deactivateLocation
+      summary: Desactiva una locación
+      description: Cambia el estado de la locación a `INACTIVE`. Requiere rol `ADMIN` o `CUSTOMER`.
+      tags: [locations]
+      parameters:
+        - $ref: '#/components/parameters/ResourceId'
+      responses:
+        '200':
+          description: Estado actualizado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LocationStatusResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ─────────────────────────────────────────────
+  # TERMINALS
+  # ─────────────────────────────────────────────
+
+  /terminals:
+    post:
+      operationId: registerTerminal
+      summary: Registra un nuevo terminal POS (solo ADMIN)
+      description: |
+        Da de alta un dispositivo TUU en la plataforma asociándolo a una organización.
+        El `serialNumber` debe ser único en toda la plataforma.
+        Requiere rol `ADMIN`.
+      tags: [terminals]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTerminalRequest'
+      responses:
+        '201':
+          description: Terminal registrado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Terminal'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+    get:
+      operationId: listTerminals
+      summary: Lista terminales
+      description: |
+        - `ADMIN` puede listar todos o filtrar por `orgId`.
+        - `CUSTOMER` solo ve los terminales de su organización.
+
+        Requiere rol `ADMIN` o `CUSTOMER`.
+      tags: [terminals]
+      parameters:
+        - name: orgId
+          in: query
+          description: Filtra terminales por organización.
+          required: false
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Lista de terminales.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Terminal'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /terminals/{id}:
+    get:
+      operationId: getTerminal
+      summary: Obtiene un terminal por ID
+      description: Requiere rol `ADMIN` o `CUSTOMER` (solo su organización).
+      tags: [terminals]
+      parameters:
+        - $ref: '#/components/parameters/ResourceId'
+      responses:
+        '200':
+          description: Datos del terminal.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Terminal'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    put:
+      operationId: updateTerminal
+      summary: Actualiza un terminal (solo ADMIN)
+      description: Actualiza modelo y/o versión de app del terminal. Requiere rol `ADMIN`.
+      tags: [terminals]
+      parameters:
+        - $ref: '#/components/parameters/ResourceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateTerminalRequest'
+      responses:
+        '200':
+          description: Terminal actualizado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Terminal'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      operationId: deleteTerminal
+      summary: Elimina un terminal (solo ADMIN)
+      description: Elimina permanentemente un terminal de la plataforma. Requiere rol `ADMIN`.
+      tags: [terminals]
+      parameters:
+        - $ref: '#/components/parameters/ResourceId'
+      responses:
+        '200':
+          description: Terminal eliminado.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /terminals/{id}/maintenance:
+    post:
+      operationId: setMaintenance
+      summary: Pone un terminal en mantenimiento (solo ADMIN)
+      description: Cambia el estado del terminal a `MAINTENANCE`. Requiere rol `ADMIN`.
+      tags: [terminals]
+      parameters:
+        - $ref: '#/components/parameters/ResourceId'
+      responses:
+        '200':
+          description: Estado actualizado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TerminalStatusResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /terminals/{id}/offline:
+    post:
+      operationId: setOffline
+      summary: Pone un terminal en modo offline (solo ADMIN)
+      description: Cambia el estado del terminal a `OFFLINE`. Requiere rol `ADMIN`.
+      tags: [terminals]
+      parameters:
+        - $ref: '#/components/parameters/ResourceId'
+      responses:
+        '200':
+          description: Estado actualizado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TerminalStatusResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ─────────────────────────────────────────────
+  # TARIFFS
+  # ─────────────────────────────────────────────
+
+  /tariffs:
+    post:
+      operationId: createTariff
+      summary: Crea una nueva tarifa para una locación
+      description: |
+        Las tarifas son **inmutables**: una vez creada, no se puede editar.
+        Para "actualizar" una tarifa se usa el mecanismo de rotación: se crea la nueva
+        tarifa (que desactiva la anterior automáticamente).
+
+        Requiere rol `ADMIN` o `CUSTOMER` (solo para locaciones de su organización).
+      tags: [tariffs]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTariffRequest'
+      responses:
+        '201':
+          description: Tarifa creada.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Tariff'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+    get:
+      operationId: listTariffs
+      summary: Lista tarifas de una locación
+      description: |
+        Lista las tarifas de una locación. Por defecto solo devuelve tarifas activas.
+        Requiere rol `ADMIN` o `CUSTOMER`.
+      tags: [tariffs]
+      parameters:
+        - name: locationId
+          in: query
+          description: ID de la locación (requerido).
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: active
+          in: query
+          description: Si `true` (por defecto), solo devuelve tarifas activas. Si `false`, devuelve todas.
+          required: false
+          schema:
+            type: boolean
+            default: true
+      responses:
+        '200':
+          description: Lista de tarifas.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Tariff'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /tariffs/{id}:
+    get:
+      operationId: getTariff
+      summary: Obtiene una tarifa por ID
+      description: Requiere rol `ADMIN` o `CUSTOMER` (solo su organización).
+      tags: [tariffs]
+      parameters:
+        - $ref: '#/components/parameters/ResourceId'
+      responses:
+        '200':
+          description: Datos de la tarifa.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Tariff'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /tariffs/{id}/deactivate:
+    post:
+      operationId: deactivateTariff
+      summary: Desactiva una tarifa
+      description: |
+        Marca la tarifa como inactiva (`isActive = false`).
+        Las tarifas no se borran; solo se desactivan para mantener el historial
+        en los snapshots de sesiones de estacionamiento.
+        Requiere rol `ADMIN` o `CUSTOMER`.
+      tags: [tariffs]
+      parameters:
+        - $ref: '#/components/parameters/ResourceId'
+      responses:
+        '200':
+          description: Tarifa desactivada.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Tariff'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ─────────────────────────────────────────────
+  # SHIFTS
+  # ─────────────────────────────────────────────
+
+  /shifts:
+    post:
+      operationId: openShift
+      summary: Abre un nuevo turno (solo OPERATOR)
+      description: |
+        El operador inicia su turno de trabajo desde el terminal POS.
+        Solo puede haber un turno activo por operador a la vez.
+        Requiere rol `OPERATOR`.
+      tags: [shifts]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OpenShiftRequest'
+      responses:
+        '201':
+          description: Turno abierto exitosamente.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Shift'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+    get:
+      operationId: listShifts
+      summary: Lista turnos (ADMIN y CUSTOMER)
+      description: |
+        Lista los turnos con filtros opcionales. El `CUSTOMER` solo ve los turnos
+        de locaciones de su organización. Requiere rol `ADMIN` o `CUSTOMER`.
+      tags: [shifts]
+      parameters:
+        - name: operatorId
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+          description: Filtra por operador.
+        - name: locationId
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+          description: Filtra por locación.
+        - name: date
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date
+            example: "2025-07-04"
+          description: Filtra por fecha (formato `YYYY-MM-DD`).
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [OPEN, CLOSED]
+          description: Filtra por estado del turno.
+      responses:
+        '200':
+          description: Lista de turnos.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Shift'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /shifts/{id}:
+    get:
+      operationId: getShift
+      summary: Obtiene un turno por ID
+      description: Requiere rol `ADMIN` o `CUSTOMER`.
+      tags: [shifts]
+      parameters:
+        - $ref: '#/components/parameters/ResourceId'
+      responses:
+        '200':
+          description: Datos del turno.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Shift'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /shifts/{id}/close:
+    post:
+      operationId: closeShift
+      summary: Cierra el turno activo (solo OPERATOR)
+      description: |
+        El operador cierra su turno registrando el efectivo final.
+        Solo el operador dueño del turno puede cerrarlo.
+        Requiere rol `OPERATOR`.
+      tags: [shifts]
+      parameters:
+        - $ref: '#/components/parameters/ResourceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CloseShiftRequest'
+      responses:
+        '200':
+          description: Turno cerrado exitosamente.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Shift'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ─────────────────────────────────────────────
+  # PARKING
+  # ─────────────────────────────────────────────
+
+  /parking-sessions:
+    post:
+      operationId: createSession
+      summary: Registra el ingreso de un vehículo (solo OPERATOR)
+      description: |
+        El operador registra el ingreso de un vehículo al estacionamiento.
+        La sesión incluye un snapshot de la tarifa vigente al momento del ingreso,
+        garantizando que el cobro sea correcto aunque la tarifa cambie después.
+
+        El campo `id` es un UUID generado por el POS para garantizar **idempotencia**:
+        si el mismo `id` se envía dos veces, se devuelve la sesión existente con `200`
+        en lugar de crear un duplicado.
+
+        Requiere rol `OPERATOR`.
+      tags: [parking]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateParkingSessionRequest'
+      responses:
+        '201':
+          description: Sesión de estacionamiento creada.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParkingSessionResponse'
+        '200':
+          description: Sesión ya existía (idempotencia por UUID del POS).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParkingSessionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /parking-sessions/{id}/checkout:
+    post:
+      operationId: checkout
+      summary: Registra la salida y cobro de un vehículo (solo OPERATOR)
+      description: |
+        El operador registra la salida del vehículo con el monto calculado y el método
+        de pago. Se crea una transacción asociada a la sesión de estacionamiento.
+        Requiere rol `OPERATOR`.
+      tags: [parking]
+      parameters:
+        - $ref: '#/components/parameters/ResourceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CheckoutRequest'
+      responses:
+        '200':
+          description: Checkout completado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParkingSessionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ─────────────────────────────────────────────
+  # POS
+  # ─────────────────────────────────────────────
+
+  /pos/bootstrap/{serialNumber}:
+    get:
+      operationId: bootstrap
+      summary: Carga inicial completa del estado del POS (solo OPERATOR)
+      description: |
+        Devuelve todos los datos necesarios para que el terminal POS pueda operar,
+        incluyendo datos del terminal, organización, locación, tarifas activas,
+        sesiones de estacionamiento activas y el turno actual del operador.
+
+        Este endpoint está diseñado para la carga inicial al encender el dispositivo
+        o reconectarse después de un período offline.
+
+        Requiere rol `OPERATOR`.
+      tags: [pos]
+      parameters:
+        - name: serialNumber
+          in: path
+          required: true
+          description: Número de serie físico del terminal TUU.
+          schema:
+            type: string
+            example: "TUU-SN-001234"
+      responses:
+        '200':
+          description: Datos de bootstrap del terminal.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BootstrapResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /pos/location-state:
+    get:
+      operationId: locationState
+      summary: Delta de estado de la locación desde un timestamp (solo OPERATOR)
+      description: |
+        Devuelve las sesiones de estacionamiento nuevas y cerradas desde el timestamp
+        `since` (epoch ms). Usado para el delta polling multi-terminal: permite
+        sincronizar el estado de la locación entre varios terminales que operan
+        en la misma locación sin recargar todo el estado.
+
+        Si `since` no se provee, devuelve todo el estado actual.
+
+        Requiere rol `OPERATOR`.
+      tags: [pos]
+      parameters:
+        - name: since
+          in: query
+          required: false
+          description: Timestamp epoch en milisegundos desde donde calcular el delta.
+          schema:
+            type: integer
+            format: int64
+            example: 1720000000000
+      responses:
+        '200':
+          description: Delta de estado de la locación.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LocationStateResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+components:
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT emitido por AWS Cognito. Incluir en `Authorization Bearer <token>`.
+
+  parameters:
+    UserId:
+      name: id
+      in: path
+      required: true
+      description: UUID interno del usuario.
+      schema:
+        type: string
+        format: uuid
+
+    ResourceId:
+      name: id
+      in: path
+      required: true
+      description: UUID interno del recurso.
+      schema:
+        type: string
+        format: uuid
+
+  responses:
+    BadRequest:
+      description: Datos inválidos según reglas de negocio.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
+          example:
+            type: "about:blank"
+            title: "Bad Request"
+            status: 400
+            detail: "rut_invalido"
+
+    Unauthorized:
+      description: Credenciales inválidas o token ausente/expirado.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
+          example:
+            type: "about:blank"
+            title: "Unauthorized"
+            status: 401
+            detail: "credenciales_invalidas"
+
+    Forbidden:
+      description: El caller no tiene permisos sobre este recurso.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
+          example:
+            type: "about:blank"
+            title: "Forbidden"
+            status: 403
+            detail: "acceso_denegado"
+
+    NotFound:
+      description: El recurso solicitado no existe.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
+          example:
+            type: "about:blank"
+            title: "Not Found"
+            status: 404
+            detail: "recurso_no_encontrado"
+
+    Conflict:
+      description: Conflicto de unicidad (RUT duplicado, email duplicado, etc.).
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
+          example:
+            type: "about:blank"
+            title: "Conflict"
+            status: 409
+            detail: "rut_ya_registrado"
+
+  schemas:
+
+    ProblemDetail:
+      type: object
+      description: Formato de error RFC 7807.
+      properties:
+        type:
+          type: string
+          example: "about:blank"
+        title:
+          type: string
+          example: "Not Found"
+        status:
+          type: integer
+          example: 404
+        detail:
+          type: string
+          example: "usuario_no_encontrado"
+
+    # ── Auth ──────────────────────────────────
+
+    DeviceLoginRequest:
+      type: object
+      required: [rut, password, serialNumber]
+      properties:
+        rut:
+          type: string
+          description: RUT del operador en cualquier formato válido. El backend lo normaliza y valida.
+          example: "12345678-9"
+        password:
+          type: string
+          format: password
+          description: Contraseña en texto plano. Solo viaja por TLS, nunca se persiste.
+        serialNumber:
+          type: string
+          description: Número de serie físico del terminal TUU. Obligatorio para OPERATOR.
+          example: "TUU-SN-001234"
+
+    TokenResponse:
+      type: object
+      properties:
+        accessToken:
+          type: string
+          description: JWT firmado por Cognito. Bearer token para las APIs del backend. Caduca en `expiresIn` segundos.
+        refreshToken:
+          type: string
+          description: Token de larga duración para renovar el access token sin pedir credenciales.
+        idToken:
+          type: string
+          description: JWT con atributos del perfil del usuario. Solo para uso del cliente (display).
+        expiresIn:
+          type: integer
+          description: Segundos hasta la expiración del accessToken (típicamente 3600).
+          example: 3600
+
+    # ── Users ─────────────────────────────────
+
+    CreateUserRequest:
+      type: object
+      required: [rut, password, email, givenName, familyName, role]
+      properties:
+        rut:
+          type: string
+          description: RUT del usuario. Se usa como username en Cognito.
+          example: "12345678-9"
+        password:
+          type: string
+          format: password
+          description: Contraseña inicial del usuario.
+        email:
+          type: string
+          format: email
+          example: "operador@empresa.cl"
+        givenName:
+          type: string
+          example: "Juan"
+        familyName:
+          type: string
+          example: "Pérez"
+        phoneNumber:
+          type: string
+          description: Teléfono en formato E.164.
+          example: "+56912345678"
+        role:
+          type: string
+          enum: [ADMIN, CUSTOMER, OPERATOR]
+          description: Rol del usuario. CUSTOMER solo puede crear OPERATOR.
+        orgId:
+          type: string
+          format: uuid
+          description: FK a organizations. Requerido para CUSTOMER y OPERATOR.
+        locationId:
+          type: string
+          format: uuid
+          description: FK a locations. Solo para OPERATOR.
+
+    UpdateUserRequest:
+      type: object
+      description: Solo se actualizan los campos presentes (no nulos).
+      properties:
+        email:
+          type: string
+          format: email
+        givenName:
+          type: string
+        familyName:
+          type: string
+        phoneNumber:
+          type: string
+          description: Teléfono en formato E.164.
+          example: "+56912345678"
+        locationId:
+          type: string
+          format: uuid
+          description: Reasigna la locación del operador.
+
+    ResetPasswordRequest:
+      type: object
+      required: [newPassword]
+      properties:
+        newPassword:
+          type: string
+          format: password
+
+    UserResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: UUID interno del usuario (PK).
+        cognitoSub:
+          type: string
+          description: Identificador permanente del usuario en Cognito.
+        rut:
+          type: string
+          description: RUT en formato canónico (XXXXXXXX-D).
+          example: "12345678-9"
+        email:
+          type: string
+          format: email
+        givenName:
+          type: string
+        familyName:
+          type: string
+        phoneNumber:
+          type: string
+        role:
+          type: string
+          enum: [ADMIN, CUSTOMER, OPERATOR]
+        userStatus:
+          type: string
+          enum: [ACTIVE, INACTIVE, SUSPENDED]
+        orgId:
+          type: string
+          format: uuid
+          nullable: true
+        locationId:
+          type: string
+          format: uuid
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+
+    UserStatusResponse:
+      type: object
+      properties:
+        userStatus:
+          type: string
+          enum: [ACTIVE, INACTIVE, SUSPENDED]
+          example: "ACTIVE"
+
+    # ── Organizations ─────────────────────────
+
+    CreateOrganizationRequest:
+      type: object
+      required: [orgName, rutCompany, orgEmail, phoneNumber, adminUserId]
+      properties:
+        orgName:
+          type: string
+          example: "Estacionamientos del Sur S.A."
+        rutCompany:
+          type: string
+          description: RUT de la empresa en formato canónico.
+          example: "76543210-K"
+        orgEmail:
+          type: string
+          format: email
+          example: "contacto@estasur.cl"
+        phoneNumber:
+          type: string
+          example: "+56223456789"
+        adminUserId:
+          type: string
+          format: uuid
+          description: UUID del usuario CUSTOMER que administra esta organización.
+
+    UpdateOrganizationRequest:
+      type: object
+      description: Solo se actualizan los campos presentes (no nulos).
+      properties:
+        orgName:
+          type: string
+        rutCompany:
+          type: string
+        orgEmail:
+          type: string
+          format: email
+        phoneNumber:
+          type: string
+
+    Organization:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        orgName:
+          type: string
+        rutCompany:
+          type: string
+        orgEmail:
+          type: string
+          format: email
+        phoneNumber:
+          type: string
+        orgStatus:
+          type: string
+          enum: [ACTIVE, INACTIVE]
+        adminUserId:
+          type: string
+          format: uuid
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+
+    OrgStatusResponse:
+      type: object
+      properties:
+        orgStatus:
+          type: string
+          enum: [ACTIVE, INACTIVE]
+          example: "ACTIVE"
+
+    # ── Locations ─────────────────────────────
+
+    CreateLocationRequest:
+      type: object
+      required: [orgId, locationName, address, city, capacity, maxOperators, timezone]
+      properties:
+        orgId:
+          type: string
+          format: uuid
+          description: Organización propietaria de la locación.
+        locationName:
+          type: string
+          example: "Estacionamiento Centro"
+        address:
+          type: string
+          example: "Av. Principal 123"
+        city:
+          type: string
+          example: "Santiago"
+        capacity:
+          type: integer
+          description: Número total de espacios de estacionamiento.
+          example: 120
+        maxOperators:
+          type: integer
+          description: Número máximo de operadores simultáneos permitidos.
+          example: 3
+        timezone:
+          type: string
+          description: Zona horaria IANA.
+          example: "America/Santiago"
+
+    UpdateLocationRequest:
+      type: object
+      description: Solo se actualizan los campos presentes (no nulos).
+      properties:
+        locationName:
+          type: string
+        address:
+          type: string
+        city:
+          type: string
+        capacity:
+          type: integer
+        maxOperators:
+          type: integer
+        timezone:
+          type: string
+
+    Location:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        orgId:
+          type: string
+          format: uuid
+        locationName:
+          type: string
+        address:
+          type: string
+        city:
+          type: string
+        capacity:
+          type: integer
+        maxOperators:
+          type: integer
+        activeOperatorsCount:
+          type: integer
+          description: Número de operadores actualmente activos en esta locación.
+        timezone:
+          type: string
+        locationStatus:
+          type: string
+          enum: [ACTIVE, INACTIVE]
+        createdAt:
+          type: string
+          format: date-time
+
+    LocationStatusResponse:
+      type: object
+      properties:
+        locationStatus:
+          type: string
+          enum: [ACTIVE, INACTIVE]
+          example: "ACTIVE"
+
+    # ── Terminals ─────────────────────────────
+
+    CreateTerminalRequest:
+      type: object
+      required: [serialNumber, model, orgId]
+      properties:
+        serialNumber:
+          type: string
+          description: Número de serie físico único del dispositivo TUU.
+          example: "TUU-SN-001234"
+        model:
+          type: string
+          example: "TUU S1"
+        orgId:
+          type: string
+          format: uuid
+          description: Organización propietaria del terminal.
+        appVersion:
+          type: string
+          description: Versión de la app Android instalada (opcional).
+          example: "2.4.1"
+
+    UpdateTerminalRequest:
+      type: object
+      description: Solo se actualizan los campos presentes (no nulos).
+      properties:
+        model:
+          type: string
+        appVersion:
+          type: string
+
+    Terminal:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        serialNumber:
+          type: string
+        model:
+          type: string
+        orgId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [ONLINE, OFFLINE, MAINTENANCE]
+        activeOperatorId:
+          type: string
+          format: uuid
+          nullable: true
+          description: Operador actualmente logueado en el terminal. Null si no hay sesión activa.
+        appVersion:
+          type: string
+          nullable: true
+        lastHeartbeat:
+          type: string
+          format: date-time
+          nullable: true
+
+    TerminalStatusResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ONLINE, OFFLINE, MAINTENANCE]
+          example: "MAINTENANCE"
+
+    # ── Tariffs ───────────────────────────────
+
+    TariffBracket:
+      type: object
+      description: Tramo de tiempo con precio diferenciado para tarifas tipo BRACKET.
+      properties:
+        id:
+          type: string
+          format: uuid
+        tariffId:
+          type: string
+          format: uuid
+        position:
+          type: integer
+          description: Orden del tramo (1-indexed).
+        fromMinute:
+          type: integer
+          description: Minuto de inicio del tramo (inclusive).
+        toMinute:
+          type: integer
+          nullable: true
+          description: Minuto de fin del tramo (inclusive). Null indica tramo abierto (sin límite superior).
+        pricePerMinute:
+          type: number
+          format: decimal
+          description: Precio por minuto dentro de este tramo.
+
+    CreateTariffRequest:
+      type: object
+      required: [locationId, vehicleType, tariffType, name]
+      properties:
+        locationId:
+          type: string
+          format: uuid
+        vehicleType:
+          type: string
+          description: Tipo de vehículo al que aplica la tarifa.
+          example: "CAR"
+        tariffType:
+          type: string
+          enum: [PER_MINUTE, BRACKET, FLAT_ENTRY]
+          description: |
+            - `PER_MINUTE`: precio fijo por minuto.
+            - `BRACKET`: precio variable por tramos de tiempo.
+            - `FLAT_ENTRY`: cobro fijo por ingreso.
+        name:
+          type: string
+          example: "Tarifa General Diurna"
+        pricePerMinute:
+          type: number
+          format: decimal
+          description: Requerido para `PER_MINUTE`.
+        graceMinutes:
+          type: integer
+          description: Minutos de gracia sin cobro.
+          example: 10
+        maxCharge:
+          type: number
+          format: decimal
+          description: Cobro máximo diario (opcional).
+        flatAmount:
+          type: number
+          format: decimal
+          description: Monto fijo. Requerido para `FLAT_ENTRY`.
+        brackets:
+          type: array
+          description: Tramos de precio. Requerido para `BRACKET`.
+          items:
+            type: object
+            required: [position, fromMinute, pricePerMinute]
+            properties:
+              position:
+                type: integer
+              fromMinute:
+                type: integer
+              toMinute:
+                type: integer
+                nullable: true
+              pricePerMinute:
+                type: number
+                format: decimal
+
+    Tariff:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        locationId:
+          type: string
+          format: uuid
+        vehicleType:
+          type: string
+        tariffType:
+          type: string
+          enum: [PER_MINUTE, BRACKET, FLAT_ENTRY]
+        name:
+          type: string
+        pricePerMinute:
+          type: number
+          format: decimal
+          nullable: true
+        graceMinutes:
+          type: integer
+        maxCharge:
+          type: number
+          format: decimal
+          nullable: true
+        flatAmount:
+          type: number
+          format: decimal
+          nullable: true
+        brackets:
+          type: array
+          items:
+            $ref: '#/components/schemas/TariffBracket'
+        isActive:
+          type: boolean
+        validFrom:
+          type: string
+          format: date-time
+        validUntil:
+          type: string
+          format: date-time
+          nullable: true
+
+    # ── Shifts ────────────────────────────────
+
+    OpenShiftRequest:
+      type: object
+      required: [openingCash]
+      properties:
+        openingCash:
+          type: number
+          format: decimal
+          description: Monto de efectivo al abrir el turno.
+          example: 50000.00
+
+    CloseShiftRequest:
+      type: object
+      required: [closingCash]
+      properties:
+        closingCash:
+          type: number
+          format: decimal
+          description: Monto de efectivo al cerrar el turno.
+          example: 125000.00
+
+    Shift:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        operatorId:
+          type: string
+          format: uuid
+        terminalId:
+          type: string
+          format: uuid
+        locationId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [OPEN, CLOSED]
+        startedAt:
+          type: string
+          format: date-time
+        closedAt:
+          type: string
+          format: date-time
+          nullable: true
+        openingCash:
+          type: number
+          format: decimal
+        closingCash:
+          type: number
+          format: decimal
+          nullable: true
+
+    # ── Parking ───────────────────────────────
+
+    TariffSnapshot:
+      type: object
+      description: |
+        Snapshot inmutable de la tarifa al momento del ingreso del vehículo.
+        Se persiste en JSONB para que el cobro sea siempre correcto,
+        independientemente de cambios posteriores en la tarifa.
+      properties:
+        tariffType:
+          type: string
+          enum: [PER_MINUTE, BRACKET, FLAT_ENTRY]
+        pricePerMinute:
+          type: number
+          format: decimal
+          nullable: true
+        graceMinutes:
+          type: integer
+        maxCharge:
+          type: number
+          format: decimal
+          nullable: true
+        flatAmount:
+          type: number
+          format: decimal
+          nullable: true
+        brackets:
+          type: array
+          items:
+            $ref: '#/components/schemas/TariffBracket'
+
+    CreateParkingSessionRequest:
+      type: object
+      required: [id, plate, vehicleType, entryAt, shiftId, tariffSnapshot]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: UUID generado por el POS. Usado para idempotencia.
+        plate:
+          type: string
+          description: Patente del vehículo.
+          example: "ABCD12"
+        vehicleType:
+          type: string
+          description: Tipo de vehículo.
+          example: "CAR"
+        entryAt:
+          type: integer
+          format: int64
+          description: Timestamp de ingreso en epoch ms.
+          example: 1720000000000
+        shiftId:
+          type: string
+          format: uuid
+          description: UUID del turno activo del operador.
+        tariffSnapshot:
+          $ref: '#/components/schemas/TariffSnapshot'
+
+    CheckoutRequest:
+      type: object
+      required: [transactionId, exitAt, durationMinutes, calculatedAmount, paymentMethod]
+      properties:
+        transactionId:
+          type: string
+          format: uuid
+          description: UUID de la transacción generado por el POS.
+        exitAt:
+          type: integer
+          format: int64
+          description: Timestamp de salida en epoch ms.
+          example: 1720003600000
+        durationMinutes:
+          type: integer
+          description: Duración calculada por el POS en minutos.
+          example: 60
+        calculatedAmount:
+          type: number
+          format: decimal
+          description: Monto calculado por el POS según el snapshot de tarifa.
+          example: 3000.00
+        paymentMethod:
+          type: string
+          description: Método de pago utilizado.
+          example: "CASH"
+        tuuReference:
+          type: string
+          nullable: true
+          description: Referencia de pago del dispositivo TUU (para pagos electrónicos).
+
+    ParkingSessionResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        plate:
+          type: string
+        vehicleType:
+          type: string
+        status:
+          type: string
+          enum: [ACTIVE, COMPLETED, CANCELLED]
+        entryAt:
+          type: string
+          format: date-time
+        exitAt:
+          type: string
+          format: date-time
+          nullable: true
+        durationMinutes:
+          type: integer
+          nullable: true
+        calculatedAmount:
+          type: number
+          format: decimal
+          nullable: true
+        locationId:
+          type: string
+          format: uuid
+        operatorId:
+          type: string
+          format: uuid
+        terminalId:
+          type: string
+          format: uuid
+        shiftId:
+          type: string
+          format: uuid
+        tariffSnapshot:
+          $ref: '#/components/schemas/TariffSnapshot'
+        transactionId:
+          type: string
+          format: uuid
+          nullable: true
+        paymentMethod:
+          type: string
+          nullable: true
+
+    # ── POS ───────────────────────────────────
+
+    BootstrapResponse:
+      type: object
+      description: Vista desnormalizada con todo el estado necesario para operar el POS offline.
+      properties:
+        terminal:
+          type: object
+          properties:
+            id:
+              type: string
+              format: uuid
+            serialNumber:
+              type: string
+            model:
+              type: string
+        organization:
+          type: object
+          properties:
+            id:
+              type: string
+              format: uuid
+            name:
+              type: string
+            rut:
+              type: string
+            email:
+              type: string
+              format: email
+            phone:
+              type: string
+        location:
+          type: object
+          properties:
+            id:
+              type: string
+              format: uuid
+            name:
+              type: string
+            address:
+              type: string
+            city:
+              type: string
+            timezone:
+              type: string
+            capacity:
+              type: integer
+        tariffs:
+          type: array
+          description: Tarifas activas de la locación.
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+                format: uuid
+              vehicleType:
+                type: string
+              name:
+                type: string
+              tariffType:
+                type: string
+                enum: [PER_MINUTE, BRACKET, FLAT_ENTRY]
+              pricePerMinute:
+                type: number
+                format: decimal
+                nullable: true
+              graceMinutes:
+                type: integer
+              maxCharge:
+                type: number
+                format: decimal
+                nullable: true
+              flatAmount:
+                type: number
+                format: decimal
+                nullable: true
+              brackets:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    position:
+                      type: integer
+                    fromMinute:
+                      type: integer
+                    toMinute:
+                      type: integer
+                      nullable: true
+                    pricePerMinute:
+                      type: number
+                      format: decimal
+        activeSessions:
+          type: array
+          description: Sesiones de estacionamiento activas en la locación.
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+                format: uuid
+              plate:
+                type: string
+              vehicleType:
+                type: string
+              entryAt:
+                type: integer
+                format: int64
+                description: Timestamp de ingreso en epoch ms.
+              operatorName:
+                type: string
+        currentShift:
+          type: object
+          nullable: true
+          description: Turno activo del operador. Null si no tiene turno abierto.
+          properties:
+            id:
+              type: string
+              format: uuid
+            startedAt:
+              type: integer
+              format: int64
+              description: Timestamp de inicio del turno en epoch ms.
+            openingCash:
+              type: number
+              format: decimal
+
+    LocationStateResponse:
+      type: object
+      description: Delta de sesiones de estacionamiento desde un timestamp dado.
+      properties:
+        asOf:
+          type: integer
+          format: int64
+          description: Timestamp epoch ms hasta el cual se calculó el delta.
+          example: 1720003600000
+        newSessions:
+          type: array
+          description: Sesiones abiertas desde `since`.
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+                format: uuid
+              plate:
+                type: string
+              vehicleType:
+                type: string
+              entryAt:
+                type: integer
+                format: int64
+              operatorName:
+                type: string
+        closedSessions:
+          type: array
+          description: Sesiones cerradas desde `since`.
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+                format: uuid
+              plate:
+                type: string
+              exitAt:
+                type: integer
+                format: int64
+              status:
+                type: string
+                enum: [COMPLETED, CANCELLED]
+              amount:
+                type: number
+                format: decimal
+                nullable: true
