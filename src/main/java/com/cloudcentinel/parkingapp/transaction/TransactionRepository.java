@@ -21,13 +21,14 @@ public class TransactionRepository {
 
     public List<TransactionResponse> listByLocation(UUID locationId) {
         return jdbc.sql("""
-                SELECT t.id AS transaction_id, t.parking_session_id, ps.plate,
-                       ps.vehicle_type::text, ps.entry_at, ps.exit_at, ps.duration_minutes,
-                       t.amount, t.payment_method::text, t.tuu_reference, t.transaction_at
-                FROM transactions t
-                JOIN parking_sessions ps ON ps.id = t.parking_session_id
+                SELECT ps.id AS parking_session_id, t.id AS transaction_id, ps.plate,
+                       ps.vehicle_type::text, ps.status::text, ps.entry_at, ps.exit_at,
+                       ps.duration_minutes, t.amount, t.payment_method::text,
+                       t.tuu_reference, t.transaction_at
+                FROM parking_sessions ps
+                LEFT JOIN transactions t ON t.parking_session_id = ps.id
                 WHERE ps.location_id = :locationId
-                ORDER BY t.transaction_at DESC
+                ORDER BY COALESCE(t.transaction_at, ps.entry_at) DESC
                 """)
                 .param("locationId", locationId)
                 .query(TransactionRepository::mapRow)
@@ -36,18 +37,21 @@ public class TransactionRepository {
 
     private static TransactionResponse mapRow(ResultSet rs, int rowNum) throws SQLException {
         Timestamp exitAt = rs.getTimestamp("exit_at");
+        Timestamp transactionAt = rs.getTimestamp("transaction_at");
+        String transactionId = rs.getString("transaction_id");
         return new TransactionResponse(
-                UUID.fromString(rs.getString("transaction_id")),
                 UUID.fromString(rs.getString("parking_session_id")),
+                transactionId != null ? UUID.fromString(transactionId) : null,
                 rs.getString("plate"),
                 rs.getString("vehicle_type"),
+                rs.getString("status"),
                 rs.getTimestamp("entry_at").toInstant(),
                 exitAt != null ? exitAt.toInstant() : null,
                 rs.getObject("duration_minutes", Integer.class),
                 rs.getBigDecimal("amount"),
                 rs.getString("payment_method"),
                 rs.getString("tuu_reference"),
-                rs.getTimestamp("transaction_at").toInstant()
+                transactionAt != null ? transactionAt.toInstant() : null
         );
     }
 

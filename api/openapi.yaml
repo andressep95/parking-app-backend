@@ -1234,11 +1234,14 @@ paths:
   /transactions:
     get:
       operationId: listTransactions
-      summary: Lista transacciones de una locación
+      summary: Lista las sesiones de estacionamiento (y su transacción) de una locación
       description: |
-        Devuelve las transacciones (cobros) registradas en una locación, más
-        recientes primero. Cada transacción corresponde a una sesión de
-        estacionamiento ya completada (`checkout`).
+        Devuelve todas las sesiones de estacionamiento de una locación —
+        activas o completadas — más recientes primero, junto con los datos
+        de la transacción cuando ya existe (`checkout` realizado). Las
+        sesiones `ACTIVE` (vehículo aún sin salir) no tienen transacción
+        todavía, por lo que `transactionId`, `amount`, `paymentMethod`,
+        `tuuReference` y `transactionAt` vienen en `null`.
 
         - `ADMIN` puede consultar cualquier locación.
         - `CUSTOMER` solo puede consultar locaciones de su propia organización.
@@ -2157,17 +2160,26 @@ components:
 
     TransactionResponse:
       type: object
+      description: |
+        A parking session at a location, with its transaction data if one exists yet.
+        `ACTIVE` sessions have no transaction — the vehicle hasn't checked out/paid,
+        so `transactionId`, `amount`, `paymentMethod`, `tuuReference` and
+        `transactionAt` are all null.
       properties:
-        transactionId:
-          type: string
-          format: uuid
         parkingSessionId:
           type: string
           format: uuid
+        transactionId:
+          type: string
+          format: uuid
+          nullable: true
         plate:
           type: string
         vehicleType:
           type: string
+        status:
+          type: string
+          enum: [ACTIVE, COMPLETED, CANCELLED]
         entryAt:
           type: string
           format: date-time
@@ -2181,15 +2193,18 @@ components:
         amount:
           type: number
           format: decimal
+          nullable: true
         paymentMethod:
           type: string
           enum: [TUU_CARD, TUU_CASH, TUU_TRANSFER]
+          nullable: true
         tuuReference:
           type: string
           nullable: true
         transactionAt:
           type: string
           format: date-time
+          nullable: true
 
     # ── POS ───────────────────────────────────
 
