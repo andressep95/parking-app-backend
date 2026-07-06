@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### [c5f1182] — 2026-07-05
+
+**feat(transactions): add GET /transactions endpoint filtered by location**
+
+> what: Adds a new endpoint that lists completed parking-session transactions for a given locationId (plate, times, amount, payment method), joining transactions with parking_sessions
+> why: The admin frontend needs a way to display registered transactions per location, which had no read endpoint yet
+> breaking: false
+
+#### Added
+
+- `src/main/java/com/cloudcentinel/parkingapp/transaction/TransactionController.java`
+- `src/main/java/com/cloudcentinel/parkingapp/transaction/TransactionResponse.java`
+- `src/main/java/com/cloudcentinel/parkingapp/transaction/TransactionService.java`
+
+#### Changed
+
+- `api/openapi.yaml`
+- `src/main/java/com/cloudcentinel/parkingapp/transaction/TransactionRepository.java`
+
+---
+
 ### [22b4177] — 2026-06-30
 
 **feat(tariff): implement dynamic three-type tariff model**
