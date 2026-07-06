@@ -4,6 +4,10 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
 import java.math.BigDecimal;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Timestamp;
+import java.util.List;
 import java.util.UUID;
 
 @Repository
@@ -13,6 +17,38 @@ public class TransactionRepository {
 
     public TransactionRepository(JdbcClient jdbc) {
         this.jdbc = jdbc;
+    }
+
+    public List<TransactionResponse> listByLocation(UUID locationId) {
+        return jdbc.sql("""
+                SELECT t.id AS transaction_id, t.parking_session_id, ps.plate,
+                       ps.vehicle_type::text, ps.entry_at, ps.exit_at, ps.duration_minutes,
+                       t.amount, t.payment_method::text, t.tuu_reference, t.transaction_at
+                FROM transactions t
+                JOIN parking_sessions ps ON ps.id = t.parking_session_id
+                WHERE ps.location_id = :locationId
+                ORDER BY t.transaction_at DESC
+                """)
+                .param("locationId", locationId)
+                .query(TransactionRepository::mapRow)
+                .list();
+    }
+
+    private static TransactionResponse mapRow(ResultSet rs, int rowNum) throws SQLException {
+        Timestamp exitAt = rs.getTimestamp("exit_at");
+        return new TransactionResponse(
+                UUID.fromString(rs.getString("transaction_id")),
+                UUID.fromString(rs.getString("parking_session_id")),
+                rs.getString("plate"),
+                rs.getString("vehicle_type"),
+                rs.getTimestamp("entry_at").toInstant(),
+                exitAt != null ? exitAt.toInstant() : null,
+                rs.getObject("duration_minutes", Integer.class),
+                rs.getBigDecimal("amount"),
+                rs.getString("payment_method"),
+                rs.getString("tuu_reference"),
+                rs.getTimestamp("transaction_at").toInstant()
+        );
     }
 
     public boolean existsById(UUID id) {

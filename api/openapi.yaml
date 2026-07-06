@@ -52,6 +52,8 @@ tags:
     description: Gestión de turnos de operadores
   - name: parking
     description: Registro de sesiones de estacionamiento (ingresos y egresos)
+  - name: transactions
+    description: Consulta de transacciones (cobros) registradas por locación
   - name: pos
     description: Endpoints exclusivos del POS Android (bootstrap y estado de locación)
 
@@ -1226,6 +1228,48 @@ paths:
           $ref: '#/components/responses/NotFound'
 
   # ─────────────────────────────────────────────
+  # TRANSACTIONS
+  # ─────────────────────────────────────────────
+
+  /transactions:
+    get:
+      operationId: listTransactions
+      summary: Lista transacciones de una locación
+      description: |
+        Devuelve las transacciones (cobros) registradas en una locación, más
+        recientes primero. Cada transacción corresponde a una sesión de
+        estacionamiento ya completada (`checkout`).
+
+        - `ADMIN` puede consultar cualquier locación.
+        - `CUSTOMER` solo puede consultar locaciones de su propia organización.
+
+        Requiere rol `ADMIN` o `CUSTOMER`.
+      tags: [transactions]
+      parameters:
+        - name: locationId
+          in: query
+          description: Locación cuyas transacciones se quieren listar.
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Lista de transacciones.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TransactionResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ─────────────────────────────────────────────
   # POS
   # ─────────────────────────────────────────────
 
@@ -2110,6 +2154,42 @@ components:
         paymentMethod:
           type: string
           nullable: true
+
+    TransactionResponse:
+      type: object
+      properties:
+        transactionId:
+          type: string
+          format: uuid
+        parkingSessionId:
+          type: string
+          format: uuid
+        plate:
+          type: string
+        vehicleType:
+          type: string
+        entryAt:
+          type: string
+          format: date-time
+        exitAt:
+          type: string
+          format: date-time
+          nullable: true
+        durationMinutes:
+          type: integer
+          nullable: true
+        amount:
+          type: number
+          format: decimal
+        paymentMethod:
+          type: string
+          enum: [TUU_CARD, TUU_CASH, TUU_TRANSFER]
+        tuuReference:
+          type: string
+          nullable: true
+        transactionAt:
+          type: string
+          format: date-time
 
     # ── POS ───────────────────────────────────
 
