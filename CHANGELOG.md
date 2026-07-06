@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### [ffcaf84] — 2026-07-05
+
+**fix(transactions): include active sessions in GET /transactions**
+
+> what: Changes the query to LEFT JOIN parking_sessions with transactions instead of an inner join, adding a status field and making transaction-specific fields (transactionId, amount, paymentMethod, tuuReference, transactionAt) nullable so ACTIVE sessions appear alongside COMPLETED ones
+> why: The endpoint previously excluded vehicles still parked (no payment yet), hiding real-time occupancy from the admin Transacciones tab
+> breaking: true
+
+#### Changed
+
+- `api/openapi.yaml`
+- `src/main/java/com/cloudcentinel/parkingapp/transaction/TransactionRepository.java`
+- `src/main/java/com/cloudcentinel/parkingapp/transaction/TransactionResponse.java`
+
+---
+
 ### [c5f1182] — 2026-07-05
 
 **feat(transactions): add GET /transactions endpoint filtered by location**
